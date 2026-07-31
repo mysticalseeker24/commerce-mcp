@@ -1,0 +1,11 @@
+{
+  /* `npm run typecheck` uses this one so tests are type-checked too — the build
+     config can't, because `rootDir: src` excludes tests/ by construction. */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+}

@@ -1,0 +1,4 @@
+-- DDL for all 8 tables. Verbatim from SPEC.md §3 — filled in Phase 1.
+--
+-- CONVENTIONS.md B2: schema changes go here and nowhere else. seed.ts executes
+-- this file and then inserts; it never contains DDL of its own.

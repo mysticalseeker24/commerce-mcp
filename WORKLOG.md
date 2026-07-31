@@ -137,8 +137,45 @@ sounding decisive.
 
 ## Entry 4 — Verification evidence
 
-*(filled per phase — seed hand-review notes, test-first commit hash, Tier-3
-transcript summary, tool-description iterations)*
+### Phase 0 — the toolchain gate, and why it was worth running
+
+The Phase 0 gate is "typecheck passes on the skeleton", which sounds like a
+formality. Running it properly surfaced a hard blocker that would otherwise have
+detonated in Phase 1, when the seed first opens a database.
+
+**The gate is not vacuous.** Before trusting a green typecheck, I checked it could
+go red: dropping `const x: string = 42` into `src/` produced
+`error TS2322: Type 'number' is not assignable to type 'string'`, and `tsc
+--listFilesOnly` confirmed 416 files in the program. A gate that cannot fail is not
+evidence.
+
+**Three independent signals, one cause — Node 23.5.0.**
+
+| Signal | Detail |
+|---|---|
+| `npm install` crashed | `TypeError: Cannot read properties of null (reading 'edgesOut')` in arborist's `#loadPeerSet` while resolving vitest's peer graph — an npm 11.3.0 bug. Re-running under npm 12.0.2 installed all 188 packages cleanly. |
+| `vitest@4.1.10` engines | `^20.0.0 \|\| ^22.0.0 \|\| >=24.0.0` — Node 23 is *explicitly excluded*, not merely untested. |
+| `better-sqlite3@13.0.2` **segfaults** | Module loads, then `new Database(':memory:')` exits `0xC0000005` (access violation) with no JS-level error. |
+
+The segfault is the real blocker. The package ships eight prebuilt Node-API binaries
+(`prebuilds/win32-x64.node` among them) and has `gypfile: false` with no install
+script, so nothing is compiled locally — which is why I expected the ABI-stable
+prebuild to work on any modern Node and why the crash is worth recording rather than
+shrugging at. Node 23 is an odd-numbered, now-EOL line; the pin to Node 24 LTS was
+already the plan, and this is the empirical justification for it.
+
+**What still works on Node 23**, and therefore what Phase 0 could legitimately
+close: `tsc` is pure JavaScript, so `npm run typecheck` passes; vitest loads and
+reports "No test files found" as expected. Only the native module is affected.
+
+**Corrected assumption, recorded.** I predicted from `gypfile: false` +
+`node-addon-api` that the Node major wouldn't matter for the native build. That
+prediction was wrong, and the probe is what caught it — a reminder that "N-API is
+ABI-stable" is a claim about the interface, not a guarantee that any given binary
+runs on any given runtime.
+
+*(Later phases: seed hand-review notes, test-first commit hash, Tier-3 transcript
+summary, tool-description iterations)*
 
 ## Entry 5 — Rejected AI suggestions
 

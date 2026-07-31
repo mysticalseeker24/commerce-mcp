@@ -26,7 +26,7 @@ Conventions for all tools:
 > range. Returns paginated summaries (max 50 per page) — use get_order_timeline
 > for a full investigation of a specific order. Start here when the analyst
 > gives you a customer email or a vague report like "customer says they were
-> charged twice."
+> charged twice." At least one filter besides limit and cursor must be provided.
 
 **Input schema:**
 ```typescript
@@ -47,6 +47,10 @@ z.object({
 }).strict()
 // At least one filter besides limit/cursor must be present — enforce with .refine()
 ```
+
+**Rejection hint** (`error_code: "invalid_input"`) when no filter is supplied:
+> "Provide at least one filter: order_id, customer_email, status, created_after,
+> created_before, min_amount_paise, or max_amount_paise."
 
 **Output:**
 ```json

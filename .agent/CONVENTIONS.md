@@ -32,12 +32,29 @@ stop and ask — do not silently deviate.
    on the MCP client surfacing the plan to the analyst. A malicious *client*
    could auto-confirm; defending against a hostile client is out of scope.
 4. **No TLS termination in-app** — Railway provides HTTPS at the edge.
+5. **Tokenized URL path is an opt-in compatibility fallback, disabled by default.**
+   Anthropic's connector auth reference discourages credentials in connector URLs,
+   and the MCP authorization spec prohibits access tokens in the URI query string.
+   Our fallback uses a path segment rather than a query parameter, so it sits
+   outside that clause's literal text but inside its reasoning: URLs reach
+   proxy/CDN access logs, browser history, and `Referer`. It exists because
+   Claude's `static_headers` auth is Beta and org-admin gated, so header-only auth
+   could leave the server unconnectable from claude.ai. It ships **off**
+   (`ALLOW_URL_TOKEN` unset), is enabled deliberately for the hosted demo, and is
+   mitigated by HTTPS-at-edge, a single-purpose synthetic-data token, and
+   one-command rotation via a Railway env var. The header path is the recommended
+   channel.
 
 ### A3. Security implementation rules
 
-- Bearer middleware runs **before** any MCP handling. Constant-time comparison
-  (`crypto.timingSafeEqual`) against `process.env.MCP_BEARER_TOKEN`. Missing
-  env var at boot = crash loudly, don't default.
+- Auth middleware runs **before** any MCP handling and accepts the shared token by
+  either transport: an `Authorization: Bearer` header, or a tokenized URL path
+  (`/mcp/<token>`) for clients that cannot set custom headers. Both paths verify via
+  constant-time comparison of SHA-256 digests against `process.env.MCP_BEARER_TOKEN`.
+  Missing env var at boot = crash loudly, don't default. The token must never appear
+  in logs from **either** path — redact the `authorization` header and rewrite the
+  request path before serialization. The URL-path route is gated behind
+  `ALLOW_URL_TOKEN` and is not mounted unless it is set (see A2.5).
 - `/health` is the only unauthenticated route. It leaks no data beyond
   `{status, uptime, seedVersion, orderCount}`.
 - Never log the bearer token. Redact `authorization` headers in pino
@@ -45,8 +62,14 @@ stop and ask — do not silently deviate.
 - Customer-authored text (`orders.notes`) must never appear in any tool output
   except inside the `customer_note.{warning, content}` wrapper defined in
   TOOLS.md. Never concatenate it into `detail` strings, plans, or summaries.
-- Every write-path rejection returns a structured error AND writes an audit
-  row with `outcome: "rejected:<reason>"`. Silent failures are bugs.
+- Every execution-path rejection returns a structured error AND writes an audit row
+  with `outcome: "rejected:<reason>"`. Proposal-stage rejections
+  (`no_action_needed`, `invalid_action_for_state`, `amount_exceeds_cap`, etc.) are
+  validation outcomes, not blocked mutations — they are logged at `warn` via the
+  instrumentation wrapper and do NOT write audit rows. Rationale: the audit log is a
+  complete record of state changes and blocked attempts to change state; a rejected
+  proposal never becomes executable, so excluding it leaves no gap in that record.
+  Silent failures are bugs.
 - Error messages to the client never include stack traces, file paths, or SQL.
 
 ---

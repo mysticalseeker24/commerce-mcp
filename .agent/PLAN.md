@@ -34,7 +34,9 @@ a *hosted* server, and deploy problems found at hour 4 are fatal.
 - Implement `get_order_timeline` only (the load-bearing tool).
 - **Deploy to Railway now.** Set env vars, confirm `/health` from a phone,
   connect claude.ai to the hosted URL, ask it to investigate ORD-1002.
-- **Gate:** hosted timeline call works end-to-end from a real MCP client.
+- **Gate (all three required):** hosted timeline call works end-to-end from
+  claude.ai; same from Claude Code via `--header`; **progress email drafted and
+  approved before sending** (hosted URL + token in the email, never the README).
 
 ## Phase 3 — Remaining read tools (30 min)
 
@@ -83,6 +85,8 @@ a *hosted* server, and deploy problems found at hour 4 are fatal.
 - [ ] propose on a healthy order (pick one ORD-2xxx) returns `no_action_needed`
 - [ ] successful refund on ORD-1002: payment transitions, order_events appended, audit row has correct before/after
 - [ ] rejected executions also write `rejected:` audit rows
+- [ ] a rejected `propose_resolution` (use `amount_exceeds_cap`) creates no audit
+      row and emits a `warn` log
 - [ ] `escalate` on ORD-1006 mutates nothing except event + audit row
 
 ### Tier 1b — `tests/timeline.test.ts`
@@ -95,6 +99,10 @@ a *hosted* server, and deploy problems found at hour 4 are fatal.
 ### Tier 2 — `tests/http.test.ts`
 
 - [ ] no token → 401; wrong token → 401; `/health` open
+- [ ] `GET` and `DELETE` on `/mcp` and `/mcp/:token` → 405 with `Allow: POST`
+      (stateless transport supports neither the SSE stream nor session teardown)
+- [ ] `/mcp/<token>` → 404 when `ALLOW_URL_TOKEN` is unset; 200 round trip when set
+- [ ] the bearer token appears in no log line from either auth path
 - [ ] MCP SDK client against the running server: `tools/list` returns all 7 with schemas
 - [ ] full round trip over HTTP: timeline → propose → execute on ORD-1004
 

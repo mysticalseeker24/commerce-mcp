@@ -43,6 +43,10 @@ All authoritative design docs live in `.agent/`. Read them **in this order**:
   session state in the server. State lives in SQLite only.
 - **Reseed on boot.** `seed.ts` drops and rebuilds the database deterministically
   at startup. Timestamps are computed relative to boot time, never hardcoded.
+- **Zod 4 only.** Use v4-native APIs (`z.email()`, `z.iso.datetime()`,
+  `z.strictObject()`). Never import from `zod/v3`. This supersedes the v3 idioms
+  written in `.agent/TOOLS.md`; semantics and `.describe()` copy are unchanged.
+  See WORKLOG entry 2.
 
 ## Stack (locked — do not substitute)
 

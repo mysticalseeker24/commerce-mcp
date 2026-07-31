@@ -1,0 +1,22 @@
+node_modules/
+dist/
+
+# Env — .env.example is committed, .env never is
+.env
+.env.*
+!.env.example
+
+# SQLite: dropped and reseeded on every boot, never a build input
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local Claude Code state (permission cache); .claude/settings.json would be shared
+.claude/settings.local.json
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.log
+coverage/

@@ -33,3 +33,18 @@ export interface ToolError {
 export function toolError(code: ErrorCode, message: string, hint: string): ToolError {
   return { error_code: code, message, hint };
 }
+
+/**
+ * Narrows a "payload or error" return.
+ *
+ * A plain `"error_code" in value` check does not narrow against
+ * `Record<string, unknown>`, because that type is permitted to carry the key —
+ * so the guard verifies the shape rather than merely the key's presence.
+ */
+export function isToolError(value: object): value is ToolError {
+  return (
+    "error_code" in value &&
+    typeof (value as { error_code: unknown }).error_code === "string" &&
+    "hint" in value
+  );
+}

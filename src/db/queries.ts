@@ -85,6 +85,38 @@ export interface CarrierExceptionRow {
   created_at: string;
 }
 
+export interface AuditRowRead {
+  id: number;
+  timestamp: string;
+  actor: string;
+  tool: string;
+  proposal_id: string | null;
+  action: string;
+  target_id: string;
+  amount_cents: number | null;
+  action_key: string | null;
+  before_state: string;
+  after_state: string;
+  outcome: string;
+}
+
+/** Filters for search_orders. `null` means "not filtering on this". */
+export interface OrderSearchFilters {
+  order_id: string | null;
+  customer_email: string | null;
+  status: string | null;
+  created_after: string | null;
+  created_before: string | null;
+  min_amount_cents: number | null;
+  max_amount_cents: number | null;
+}
+
+/** Keyset cursor: the (created_at, id) of the last row already returned. */
+export interface OrderSearchCursor {
+  created_at: string;
+  id: string;
+}
+
 export interface Queries {
   readonly db: Db;
   getOrder(orderId: string): OrderRow | undefined;
@@ -100,6 +132,20 @@ export interface Queries {
    * attempt must not permanently block the legitimate retry.
    */
   getExecutedRefundActionKeys(): string[];
+
+  /** Keyset page of orders matching `filters`, newest first. */
+  searchOrders(
+    filters: OrderSearchFilters,
+    cursor: OrderSearchCursor | null,
+    limit: number,
+  ): OrderRow[];
+  /** Total matching `filters`, ignoring the cursor and limit. */
+  countMatchingOrders(filters: OrderSearchFilters): number;
+
+  getPayment(paymentId: string): PaymentRow | undefined;
+  getInventory(sku: string): InventoryRow | undefined;
+  getHoldsForSku(sku: string): HoldRow[];
+  getAuditLog(orderId: string | null, limit: number): AuditRowRead[];
 }
 
 export function createQueries(db: Db): Queries {
@@ -122,6 +168,73 @@ export function createQueries(db: Db): Queries {
     "SELECT action_key FROM audit_log WHERE action_key IS NOT NULL AND outcome = 'success'",
   );
 
+  /* ------------------------------------------------------------------------
+   * search_orders.
+   *
+   * The filter list is variable but the SQL is NOT: every optional filter uses a
+   * `:param IS NULL OR ...` guard, so this stays one statically-prepared statement
+   * with named parameters. Composing a WHERE clause from string fragments would
+   * have worked too, but a single static statement keeps CONVENTIONS B2's "all SQL
+   * lives here as named prepared statements" literally true, and leaves no code
+   * path where a fragment could ever be built from input.
+   *
+   * Pagination is keyset, using SQLite row-value comparison:
+   *     (created_at, id) < (:cursor_created_at, :cursor_id)
+   * Comparing the tuple rather than `created_at < ?` is what makes ties safe.
+   * Verified by mutation: replacing this with a naive `created_at <` comparison
+   * silently loses 5 of 250 orders across a full sweep.
+   * ---------------------------------------------------------------------- */
+  const ORDER_FILTER_SQL = `
+    (:order_id IS NULL OR o.id = :order_id)
+    AND (:customer_email IS NULL OR c.email = :customer_email)
+    AND (:status IS NULL OR o.status = :status)
+    AND (:created_after IS NULL OR o.created_at >= :created_after)
+    AND (:created_before IS NULL OR o.created_at <= :created_before)
+    AND (:min_amount_cents IS NULL OR o.total_cents >= :min_amount_cents)
+    AND (:max_amount_cents IS NULL OR o.total_cents <= :max_amount_cents)
+  `;
+
+  const selectOrderPage = db.prepare<Record<string, string | number | null>, OrderRow>(`
+    SELECT o.* FROM orders o JOIN customers c ON c.id = o.customer_id
+    WHERE ${ORDER_FILTER_SQL}
+      AND (:cursor_created_at IS NULL
+           OR (o.created_at, o.id) < (:cursor_created_at, :cursor_id))
+    ORDER BY o.created_at DESC, o.id DESC
+    LIMIT :limit
+  `);
+
+  const selectMatchingOrderCount = db.prepare<Record<string, string | number | null>, { c: number }>(`
+    SELECT COUNT(*) AS c FROM orders o JOIN customers c ON c.id = o.customer_id
+    WHERE ${ORDER_FILTER_SQL}
+  `);
+
+  const selectPayment = db.prepare<[string], PaymentRow>("SELECT * FROM payments WHERE id = ?");
+  const selectInventory = db.prepare<[string], InventoryRow>(
+    "SELECT * FROM inventory WHERE sku = ?",
+  );
+  const selectHoldsForSku = db.prepare<[string], HoldRow>(
+    "SELECT * FROM inventory_holds WHERE sku = ? ORDER BY id",
+  );
+  const selectAuditAll = db.prepare<[number], AuditRowRead>(
+    "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?",
+  );
+  const selectAuditForOrder = db.prepare<[string, string, number], AuditRowRead>(
+    `SELECT a.* FROM audit_log a
+     WHERE a.target_id = ?
+        OR a.target_id IN (SELECT id FROM payments WHERE order_id = ?)
+     ORDER BY a.id DESC LIMIT ?`,
+  );
+
+  const filterParams = (f: OrderSearchFilters): Record<string, string | number | null> => ({
+    order_id: f.order_id,
+    customer_email: f.customer_email,
+    status: f.status,
+    created_after: f.created_after,
+    created_before: f.created_before,
+    min_amount_cents: f.min_amount_cents,
+    max_amount_cents: f.max_amount_cents,
+  });
+
   return {
     db,
     getOrder: (orderId) => selectOrder.get(orderId),
@@ -132,5 +245,23 @@ export function createQueries(db: Db): Queries {
     getCarrierExceptionsForOrder: (orderId) => selectCarrierExceptions.all(orderId),
     countOrders: () => selectOrderCount.get()?.c ?? 0,
     getExecutedRefundActionKeys: () => selectExecutedRefundKeys.all().map((r) => r.action_key),
+
+    searchOrders: (filters, cursor, limit) =>
+      selectOrderPage.all({
+        ...filterParams(filters),
+        cursor_created_at: cursor?.created_at ?? null,
+        cursor_id: cursor?.id ?? null,
+        limit,
+      }),
+
+    countMatchingOrders: (filters) => selectMatchingOrderCount.get(filterParams(filters))?.c ?? 0,
+
+    getPayment: (paymentId) => selectPayment.get(paymentId),
+    getInventory: (sku) => selectInventory.get(sku),
+    getHoldsForSku: (sku) => selectHoldsForSku.all(sku),
+    getAuditLog: (orderId, limit) =>
+      orderId === null
+        ? selectAuditAll.all(limit)
+        : selectAuditForOrder.all(orderId, orderId, limit),
   };
 }

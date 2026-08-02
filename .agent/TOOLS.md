@@ -60,14 +60,39 @@ z.object({
     "status": "confirmed", "total_cents": 29900, "total_display": "$299.00",
     "created_at": "...",
     "payment_summary": {"count": 2, "captured_total_cents": 59800, "statuses": ["captured","captured"]},
-    "anomaly_hints": ["captured total ($598.00) exceeds order total ($299.00)"]
+    "anomaly_hints": ["2 payments captured totalling $598.00 against an order total of $299.00"],
+    "refund_eligible": false
   }],
   "next_cursor": "...", "total_matched": 1, "as_of": "..."
 }
 ```
-`anomaly_hints` is computed (captured ≠ total, active holds on dead orders,
-terminal-state mismatches). It makes the search tool itself diagnostic — the
-agent spots the problem from the search result, before drilling in.
+`anomaly_hints` is computed — double captures, captured-but-failed orders, inventory
+held by a cancelled order, unsettled refunds, advanced-but-unpaid orders, and
+**verified returned/damaged value with no corresponding refund**. It makes the search
+tool itself diagnostic: the agent spots the problem from the search result, before
+drilling in.
+
+That last class is load-bearing and was missing in the first implementation. Search
+compared only captured-vs-order-total, so it caught double charges while being blind
+to refund gaps — exactly the class the refund policy is built around. ORD-1007 and
+ORD-1009 returned empty hints from search while their timelines reported
+`PARTIAL_REFUND_GAP`, meaning an analyst starting from a customer email would scroll
+past a live, refund-eligible case. Since this tool's description tells them to start
+here, that was a workflow hole rather than a cosmetic gap.
+
+`refund_eligible` is a boolean on every row, so a list view is scannable for
+actionable cases. It runs the **real** policy engine per row rather than
+approximating it, so a row can never advertise a refund that `propose_resolution`
+would then refuse. `false` does not mean "healthy" — it means "not refundable",
+which covers healthy orders and broken ones whose remedy is an escalation alike.
+
+**Rejections use the standard error contract, not schema refinements.** The
+"at least one filter" rule and the exactly-one-of rules on `get_payment_details` and
+`check_inventory` are enforced *inside the handlers*. A Zod `.refine()` is validated
+by the SDK before the handler runs and surfaces as a thrown JSON-RPC `-32602`, which
+bypasses `{error_code, message, hint}` entirely and denies the agent the hint listing
+the valid filters. CONVENTIONS.md B4 requires rejections to return `isError: true`
+and never be thrown across the transport.
 
 ---
 
@@ -132,7 +157,13 @@ z.object({
 `PARTIAL_REFUND_GAP`, or empty for healthy orders. The tool does the arithmetic;
 the agent does the judgment.
 
-`diagnostics.refund_eligibility` runs the same six checks `propose_resolution` will
+`diagnostics.refund_eligibility` carries `applicable: false` with a `reason`, and no
+checks at all, when nothing is owed to the customer and no verified carrier exception
+exists — there is simply no refund to evaluate. Reporting six checks on such an order
+was actively misleading: a healthy order showed "4 of 6 passing", which reads as
+*nearly eligible* when the correct reading is *there is nothing to refund*.
+
+When `applicable: true`, it runs the same six checks `propose_resolution` will
 run, evaluated against the **maximum refundable amount** for the order. It exists so
 the agent learns during investigation that (say) a refund is impossible on risk
 grounds, rather than discovering it after proposing one. `evaluated_amount_cents`

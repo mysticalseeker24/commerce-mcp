@@ -105,10 +105,18 @@ export function returnedValueCents(exceptions: readonly CarrierExceptionRow[]): 
     .reduce((sum, ce) => sum + ce.claim_value_cents, 0);
 }
 
+/**
+ * Days since the most recent event, to one decimal place.
+ *
+ * One decimal rather than a floor, to match how policy.ts states order age
+ * ("order is 2.0 days old"). Reporting `1` alongside `2.0` for the same order
+ * invites the reader to wonder which one is rounded and in which direction.
+ */
 export function daysSinceLastEvent(events: readonly OrderEventRow[], now: Date): number {
   const last = events.at(-1);
   if (last === undefined) return 0;
-  return Math.floor((now.getTime() - new Date(last.timestamp).getTime()) / MS_PER_DAY);
+  const days = (now.getTime() - new Date(last.timestamp).getTime()) / MS_PER_DAY;
+  return Math.round(days * 10) / 10;
 }
 
 /**

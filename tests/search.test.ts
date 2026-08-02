@@ -14,6 +14,7 @@ import {
   getPaymentDetails,
   checkInventory,
   getAuditLog,
+  buildOrderTimeline,
 } from "../src/tools/read.js";
 import { isToolError } from "../src/errors.js";
 
@@ -147,17 +148,27 @@ describe("full pagination sweep", () => {
 });
 
 describe("search filters", () => {
-  it("requires at least one filter besides limit and cursor", () => {
-    // Enforced by the Zod refinement; asserted here so the contract is pinned.
-    const parsed = (() => {
-      try {
-        return search({ limit: 20 } as Parameters<typeof searchOrders>[1]);
-      } catch {
-        return null;
+  it("rejects a filterless search through the error contract, not a thrown error", () => {
+    // Regression: this was a schema .refine(), which the SDK validates BEFORE the
+    // handler runs and reports as a thrown JSON-RPC -32602. CONVENTIONS B4 requires
+    // rejections to come back as isError with {error_code, message, hint} — and the
+    // hint listing the valid filters is what teaches the agent the contract.
+    const r = searchOrders(q, { limit: 20 });
+    expect(isToolError(r)).toBe(true);
+    if (isToolError(r)) {
+      expect(r.error_code).toBe("invalid_input");
+      for (const filter of [
+        "order_id", "customer_email", "status",
+        "created_after", "created_before", "min_amount_cents", "max_amount_cents",
+      ]) {
+        expect(r.hint).toContain(filter);
       }
-    })();
-    // The handler itself does not reject — the schema does, before it is called.
-    expect(parsed).not.toBeUndefined();
+    }
+  });
+
+  it("a cursor alone is still filterless", () => {
+    const r = searchOrders(q, { limit: 20, cursor: "whatever" });
+    expect(isToolError(r)).toBe(true);
   });
 
   it("finds an order by exact id", () => {
@@ -216,6 +227,129 @@ describe("anomaly_hints make search itself diagnostic", () => {
   it("says nothing about a healthy order", () => {
     expect(search({ order_id: "ORD-2001", limit: 20 }).results[0]?.anomaly_hints).toEqual([]);
     expect(search({ order_id: "ORD-1008", limit: 20 }).results[0]?.anomaly_hints).toEqual([]);
+  });
+
+  /*
+   * The refund-gap class. These were the bug: search returned NO hints for ORD-1007
+   * and ORD-1009 while their timelines reported PARTIAL_REFUND_GAP, so an analyst
+   * searching by customer email would scroll past a live refund-eligible case.
+   */
+  it("surfaces ORD-1007's $30.00 gap, which search previously missed entirely", () => {
+    const row = search({ order_id: "ORD-1007", limit: 20 }).results[0];
+    expect(row?.anomaly_hints.length).toBeGreaterThan(0);
+    expect(row?.anomaly_hints.some((h) => h.includes("$30.00") && h.includes("owed"))).toBe(true);
+  });
+
+  it("surfaces ORD-1009's $180.00 gap", () => {
+    const hints = search({ order_id: "ORD-1009", limit: 20 }).results[0]?.anomaly_hints ?? [];
+    expect(hints.some((h) => h.includes("$180.00") && h.includes("owed"))).toBe(true);
+  });
+
+  it("a wide delivered search surfaces hints for both 1007 and 1009", () => {
+    // The workflow the tool description actually promises: start here, spot the
+    // problem from the list.
+    const seen = new Map<string, string[]>();
+    let cursor: string | undefined;
+    for (;;) {
+      const page: SearchResult = search(
+        cursor === undefined
+          ? { status: "delivered", min_amount_cents: 0, limit: 50 }
+          : { status: "delivered", min_amount_cents: 0, limit: 50, cursor },
+      );
+      for (const r of page.results) seen.set(r.order_id, r.anomaly_hints);
+      if (page.next_cursor === null) break;
+      cursor = page.next_cursor;
+    }
+    expect(seen.get("ORD-1007")?.length ?? 0).toBeGreaterThan(0);
+    expect(seen.get("ORD-1009")?.length ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe("refund_eligible marks actionable rows in a list view", () => {
+  const eligible = (orderId: string): boolean =>
+    (search({ order_id: orderId, limit: 20 }).results[0] as unknown as { refund_eligible: boolean })
+      .refund_eligible;
+
+  it("ORD-1007 is the one row flagged eligible", () => {
+    expect(eligible("ORD-1007")).toBe(true);
+  });
+
+  it("the near misses are not flagged, despite having gaps", () => {
+    expect(eligible("ORD-1009")).toBe(false);
+    expect(eligible("ORD-1010")).toBe(false);
+    expect(eligible("ORD-1011")).toBe(false);
+  });
+
+  it("healthy and escalation-only orders are not flagged", () => {
+    for (const id of ["ORD-1001", "ORD-1002", "ORD-1006", "ORD-1008", "ORD-2001"]) {
+      expect(eligible(id)).toBe(false);
+    }
+  });
+
+  it("never claims eligibility the policy engine would refuse", () => {
+    // The marker runs the real evaluator rather than approximating it, so a row
+    // cannot advertise a refund that propose_resolution would then reject.
+    for (const id of ["ORD-1007", "ORD-1009", "ORD-1010", "ORD-1011"]) {
+      const row = search({ order_id: id, limit: 20 }).results[0] as unknown as {
+        refund_eligible: boolean;
+      };
+      const timeline = buildOrderTimeline(q, id) as unknown as {
+        diagnostics: { refund_eligibility: { applicable: boolean; eligible?: boolean } };
+      };
+      const e = timeline.diagnostics.refund_eligibility;
+      expect(row.refund_eligible).toBe(e.applicable && e.eligible === true);
+    }
+  });
+});
+
+describe("refund_eligibility is suppressed when there is nothing to refund", () => {
+  const eligibilityOf = (orderId: string): { applicable: boolean; checks?: unknown[]; reason?: string } =>
+    (
+      buildOrderTimeline(q, orderId) as unknown as {
+        diagnostics: { refund_eligibility: { applicable: boolean; checks?: unknown[]; reason?: string } };
+      }
+    ).diagnostics.refund_eligibility;
+
+  it("ORD-1008 reports not-applicable instead of a misleading 4-of-6", () => {
+    // Showing four passing checks on a healthy order reads as "nearly eligible".
+    const e = eligibilityOf("ORD-1008");
+    expect(e.applicable).toBe(false);
+    expect(e.checks).toBeUndefined();
+    expect(e.reason).toContain("no refund to evaluate");
+  });
+
+  it("a healthy generated order is also not applicable", () => {
+    expect(eligibilityOf("ORD-2001").applicable).toBe(false);
+  });
+
+  it("ORD-1002 stays applicable — it is owed money, it just fails the checks", () => {
+    const e = eligibilityOf("ORD-1002");
+    expect(e.applicable).toBe(true);
+    expect(e.checks).toHaveLength(6);
+  });
+
+  it("ORD-1007 stays applicable and eligible", () => {
+    const e = eligibilityOf("ORD-1007") as { applicable: boolean; eligible: boolean };
+    expect(e.applicable).toBe(true);
+    expect(e.eligible).toBe(true);
+  });
+});
+
+describe("cross-field validation returns the error contract, not a thrown error", () => {
+  it("get_payment_details rejects both ids", () => {
+    const r = getPaymentDetails(q, { order_id: "ORD-1007", payment_id: "PAY-2008" });
+    expect(isToolError(r)).toBe(true);
+    if (isToolError(r)) expect(r.error_code).toBe("invalid_input");
+  });
+
+  it("get_payment_details rejects neither id", () => {
+    const r = getPaymentDetails(q, {});
+    expect(isToolError(r)).toBe(true);
+  });
+
+  it("check_inventory rejects both, and neither", () => {
+    expect(isToolError(checkInventory(q, { sku: "SKU-0007", order_id: "ORD-1004" }))).toBe(true);
+    expect(isToolError(checkInventory(q, {}))).toBe(true);
   });
 });
 

@@ -21,13 +21,14 @@ import type {
   OrderRow,
   PaymentRow,
   HoldRow,
+  CarrierExceptionRow,
   OrderSearchCursor,
 } from "../db/queries.js";
 import { instrumented, ok, fail, type InstrumentOptions } from "../instrument.js";
 import { isToolError, toolError, type ToolError } from "../errors.js";
 import { formatCents } from "../money.js";
 import { now } from "../time.js";
-import { computeDiagnostics, returnedValueCents } from "../diagnostics.js";
+import { computeDiagnostics, computeMoney, returnedValueCents } from "../diagnostics.js";
 import {
   evaluateRefundEligibility,
   refundableCents,
@@ -70,37 +71,57 @@ function paymentView(payment: PaymentRow): Record<string, unknown> {
  * `evaluated_amount_cents` is reported because eligibility is amount-dependent for
  * checks 1 and 2 — a verdict without its basis would be misleading.
  */
+interface RefundEligibilityView extends Partial<EligibilityResult> {
+  /**
+   * Whether a refund is even the question. False when the customer is owed nothing
+   * and no verified carrier exception exists — there is no amount to evaluate.
+   *
+   * This exists because reporting six checks on a healthy order was actively
+   * misleading: ORD-1008 showed "4 of 6 passing", which reads as *nearly eligible*
+   * to a hurried agent when the correct reading is *there is nothing to refund*.
+   * Suppressing the checks removes the misleading number rather than relying on
+   * the reader to notice `first_failure`.
+   */
+  applicable: boolean;
+  reason?: string;
+  evaluated_amount_cents?: number;
+}
+
 function refundEligibilityFor(
   queries: Queries,
   order: OrderRow,
   payments: readonly PaymentRow[],
-): (EligibilityResult & { evaluated_amount_cents: number }) | null {
+): RefundEligibilityView | null {
   const target = payments.find((p) => p.status === "captured");
   const customer = queries.getCustomer(order.customer_id);
   if (target === undefined || customer === undefined) return null;
 
+  const carrierExceptions = queries.getCarrierExceptionsForOrder(order.id);
+  const money = computeMoney(order, payments, returnedValueCents(carrierExceptions));
+  const owed = Math.max(money.discrepancy_cents, 0);
+  const hasVerifiedException = carrierExceptions.some((ce) => ce.verified === 1);
+
+  if (owed <= 0 && !hasVerifiedException) {
+    return {
+      applicable: false,
+      reason:
+        "nothing is owed to the customer and no verified carrier exception is on file — there is no refund to evaluate",
+    };
+  }
+
   // The gap the customer is actually owed, capped by what remains refundable.
-  const events = queries.getEventsForOrder(order.id);
-  const diagnostics = computeDiagnostics({
-    order,
-    payments,
-    holds: queries.getHoldsForOrder(order.id),
-    events,
-    carrierExceptions: queries.getCarrierExceptionsForOrder(order.id),
-  });
-  const owed = Math.max(diagnostics.discrepancy_cents, 0);
   const evaluated = Math.min(owed > 0 ? owed : refundableCents(target), refundableCents(target));
 
   const result = evaluateRefundEligibility({
     order,
     payment: target,
     customer,
-    carrierExceptions: queries.getCarrierExceptionsForOrder(order.id),
+    carrierExceptions,
     priorRefundActionKeys: queries.getExecutedRefundActionKeys(),
     amountCents: evaluated,
   });
 
-  return { ...result, evaluated_amount_cents: evaluated };
+  return { applicable: true, ...result, evaluated_amount_cents: evaluated };
 }
 
 export function buildOrderTimeline(queries: Queries, orderId: string): Record<string, unknown> | null {
@@ -178,8 +199,7 @@ const ORDER_STATUSES = [
   "pending", "confirmed", "packed", "shipped", "delivered", "cancelled", "failed",
 ] as const;
 
-const SearchOrdersInput = z
-  .strictObject({
+const SearchOrdersInput = z.strictObject({
     order_id: z.string().regex(/^ORD-\d+$/).optional().describe("Exact order ID, e.g. ORD-1002"),
     customer_email: z.email().optional().describe("Customer's email address"),
     status: z.enum(ORDER_STATUSES).optional(),
@@ -189,18 +209,22 @@ const SearchOrdersInput = z
     max_amount_cents: z.number().int().nonnegative().optional(),
     limit: z.number().int().min(1).max(50).default(20),
     cursor: z.string().optional().describe("Opaque pagination cursor from a previous response"),
-  })
-  .refine(
-    (v) =>
-      v.order_id !== undefined ||
-      v.customer_email !== undefined ||
-      v.status !== undefined ||
-      v.created_after !== undefined ||
-      v.created_before !== undefined ||
-      v.min_amount_cents !== undefined ||
-      v.max_amount_cents !== undefined,
-    { message: "At least one filter besides limit and cursor must be provided" },
-  );
+});
+
+/*
+ * The "at least one filter" rule is enforced in the HANDLER, not as a schema
+ * refinement.
+ *
+ * A `.refine()` here would be validated by the SDK before our handler runs, and the
+ * SDK reports that as a thrown JSON-RPC error (-32602). CONVENTIONS B4 requires
+ * every rejection to come back as `isError: true` with {error_code, message, hint},
+ * never thrown across the transport — and the pinned hint listing the valid filters
+ * is the whole point: it teaches the agent the contract at the moment it gets it
+ * wrong. A -32602 string teaches it nothing actionable.
+ *
+ * The rule is still advertised: it is stated in the tool description, which is what
+ * the model reads before calling.
+ */
 
 export type SearchOrdersArgs = z.infer<typeof SearchOrdersInput>;
 
@@ -234,6 +258,7 @@ function anomalyHints(
   order: OrderRow,
   payments: readonly PaymentRow[],
   holds: readonly HoldRow[],
+  carrierExceptions: readonly CarrierExceptionRow[],
 ): string[] {
   const hints: string[] = [];
   const captured = payments
@@ -241,6 +266,7 @@ function anomalyHints(
     .reduce((sum, p) => sum + p.amount_cents, 0);
   const refunded = payments.reduce((sum, p) => sum + p.refunded_cents, 0);
   const netPaid = captured - refunded;
+  const returned = returnedValueCents(carrierExceptions);
 
   if (payments.filter((p) => p.status === "captured").length > 1) {
     hints.push(
@@ -249,6 +275,23 @@ function anomalyHints(
   } else if (netPaid > order.total_cents) {
     hints.push(
       `net paid (${formatCents(netPaid)}) exceeds order total (${formatCents(order.total_cents)})`,
+    );
+  }
+
+  /*
+   * The refund-gap class — the one the client's whole policy is built around.
+   *
+   * Originally missing, and its absence was a real workflow hole rather than a
+   * cosmetic one: ORD-1007 and ORD-1009 returned NO hints from search while their
+   * timelines reported PARTIAL_REFUND_GAP. Since the tool description tells the
+   * analyst to start here from a customer email, a live refund-eligible case would
+   * have been scrolled straight past.
+   */
+  if (returned > refunded) {
+    const gap = returned - refunded;
+    hints.push(
+      `${formatCents(returned)} of verified returned or damaged value with only ` +
+        `${formatCents(refunded)} refunded — ${formatCents(gap)} owed to the customer`,
     );
   }
 
@@ -269,6 +312,23 @@ function anomalyHints(
 }
 
 export function searchOrders(queries: Queries, args: SearchOrdersArgs): Record<string, unknown> | ToolError {
+  const hasFilter =
+    args.order_id !== undefined ||
+    args.customer_email !== undefined ||
+    args.status !== undefined ||
+    args.created_after !== undefined ||
+    args.created_before !== undefined ||
+    args.min_amount_cents !== undefined ||
+    args.max_amount_cents !== undefined;
+
+  if (!hasFilter) {
+    return toolError(
+      "invalid_input",
+      "search_orders needs at least one filter besides limit and cursor.",
+      "Provide at least one filter: order_id, customer_email, status, created_after, created_before, min_amount_cents, or max_amount_cents.",
+    );
+  }
+
   const cursor = args.cursor === undefined ? null : decodeCursor(args.cursor);
   if (args.cursor !== undefined && cursor === null) {
     return toolError(
@@ -296,9 +356,15 @@ export function searchOrders(queries: Queries, args: SearchOrdersArgs): Record<s
       const customer = queries.getCustomer(order.customer_id);
       const payments = queries.getPaymentsForOrder(order.id);
       const holds = queries.getHoldsForOrder(order.id);
+      const carrierExceptions = queries.getCarrierExceptionsForOrder(order.id);
       const captured = payments
         .filter((p) => p.status === "captured" || p.status === "refunded" || p.status === "refund_initiated")
         .reduce((sum, p) => sum + p.amount_cents, 0);
+
+      // Run the real policy per row rather than approximating it, so a row can
+      // never claim eligibility the propose step would then refuse. Costs one
+      // extra evaluation per result, bounded by the 50-row page cap.
+      const eligibility = refundEligibilityFor(queries, order, payments);
 
       return {
         order_id: order.id,
@@ -317,7 +383,11 @@ export function searchOrders(queries: Queries, args: SearchOrdersArgs): Record<s
           refunded_total_cents: payments.reduce((sum, p) => sum + p.refunded_cents, 0),
           statuses: payments.map((p) => p.status),
         },
-        anomaly_hints: anomalyHints(order, payments, holds),
+        anomaly_hints: anomalyHints(order, payments, holds, carrierExceptions),
+        // Present on every row so a list view is scannable for actionable cases.
+        // `false` here is not "healthy" — it means "not refundable", which covers
+        // both healthy orders and broken ones whose remedy is an escalation.
+        refund_eligible: eligibility !== null && eligibility.applicable && eligibility.eligible,
       };
     }),
     // Null rather than absent on the last page: an agent checking `next_cursor`
@@ -332,14 +402,10 @@ export function searchOrders(queries: Queries, args: SearchOrdersArgs): Record<s
  * get_payment_details
  * ========================================================================== */
 
-const GetPaymentDetailsInput = z
-  .strictObject({
+const GetPaymentDetailsInput = z.strictObject({
     order_id: z.string().regex(/^ORD-\d+$/).optional(),
     payment_id: z.string().regex(/^PAY-\d+$/).optional(),
-  })
-  .refine((v) => (v.order_id === undefined) !== (v.payment_id === undefined), {
-    message: "Provide exactly one of order_id or payment_id",
-  });
+});
 
 export type GetPaymentDetailsArgs = z.infer<typeof GetPaymentDetailsInput>;
 
@@ -347,6 +413,14 @@ export function getPaymentDetails(
   queries: Queries,
   args: GetPaymentDetailsArgs,
 ): Record<string, unknown> | ToolError {
+  if ((args.order_id === undefined) === (args.payment_id === undefined)) {
+    return toolError(
+      "invalid_input",
+      "Provide exactly one of order_id or payment_id.",
+      "Pass order_id to list every payment attempt on an order, or payment_id to inspect one payment.",
+    );
+  }
+
   let payments: PaymentRow[];
 
   if (args.payment_id !== undefined) {
@@ -384,14 +458,10 @@ export function getPaymentDetails(
  * check_inventory
  * ========================================================================== */
 
-const CheckInventoryInput = z
-  .strictObject({
+const CheckInventoryInput = z.strictObject({
     sku: z.string().regex(/^SKU-\d+$/).optional(),
     order_id: z.string().regex(/^ORD-\d+$/).optional(),
-  })
-  .refine((v) => (v.sku === undefined) !== (v.order_id === undefined), {
-    message: "Provide exactly one of sku or order_id",
-  });
+});
 
 export type CheckInventoryArgs = z.infer<typeof CheckInventoryInput>;
 
@@ -399,6 +469,14 @@ export function checkInventory(
   queries: Queries,
   args: CheckInventoryArgs,
 ): Record<string, unknown> | ToolError {
+  if ((args.sku === undefined) === (args.order_id === undefined)) {
+    return toolError(
+      "invalid_input",
+      "Provide exactly one of sku or order_id.",
+      "Pass sku to see stock and every hold against it, or order_id to see the holds tied to one order.",
+    );
+  }
+
   /** Each hold carries its order's status, so an anomaly is visible in one response. */
   const holdView = (hold: HoldRow): Record<string, unknown> => {
     const order = queries.getOrder(hold.order_id);

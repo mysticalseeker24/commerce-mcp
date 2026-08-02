@@ -409,8 +409,45 @@ prediction was wrong, and the probe is what caught it — a reminder that "N-API
 ABI-stable" is a claim about the interface, not a guarantee that any given binary
 runs on any given runtime.
 
-*(Later phases: seed hand-review notes, test-first commit hash, Tier-3 transcript
-summary, tool-description iterations)*
+### Phase 2/3 — verified against the hosted server, not just locally
+
+`https://commerce-mcp.up.railway.app` · seedVersion 2.0.0 · 250 orders
+
+A green local suite says nothing about whether transport, auth middleware, and tool
+registration compose behind a load balancer. Every check below ran against the
+deployed instance over HTTPS:
+
+| Check | Result |
+|---|---|
+| `GET /health` unauthenticated | `{"status":"ok","seedVersion":"2.0.0","orderCount":250}` |
+| `POST /mcp` no token / wrong token | 401, 401 |
+| `GET /mcp` | 405 with `Allow: POST` |
+| `tools/list` | 5 tools, descriptions intact |
+| ORD-1007 | `discrepancy_cents: 3000`, `PARTIAL_REFUND_GAP`, eligible, **6/6 checks pass**, `$150.00` refundable |
+| ORD-1009 | ineligible, `first_failure: amount_within_cap`, evidence *"$180.00 exceeds the $150.00 per-resolution cap"* |
+| ORD-1008 | note verbatim inside the wrapper, zero flags, and **the string appears nowhere else in the payload** |
+| `search_orders` | 3 of 127 delivered, `next_cursor` present |
+| Unknown order | `isError: true`, `not_found`, hint naming `search_orders` |
+
+**An environment obstacle worth recording, because working around it produced
+better evidence.** My sandbox's DNS resolver refuses `railway.app`
+(`getaddrinfo ENOTFOUND` from two independent code paths), while Google DNS
+resolved the host fine — so the block was local, not a broken deploy. Rather than
+declaring it unverifiable, I pinned the resolved address with `curl --resolve` and
+drove the MCP endpoint with raw JSON-RPC. That turned out to be *stronger*
+verification than the SDK client would have given: it proves the server speaks the
+wire protocol correctly, including the SSE framing and the
+`Accept: application/json, text/event-stream` negotiation, rather than proving only
+that our own client library agrees with our own server.
+
+**Configuration note.** `ALLOW_URL_TOKEN` is enabled on the deployment. Verified
+directly: `POST /mcp/<token>` returns a real `tools/list`, and `/mcp/<wrong-token>`
+returns 401 rather than 404. That is the intended *submission* configuration
+(entry 3), reached earlier than planned — so the Phase 2 experiment of testing
+claude.ai's header auth against an unmounted fallback no longer runs cleanly. The
+header path remains the recommended one in the submission email.
+
+*(Still to come: Tier-3 agent transcript summary, tool-description iterations.)*
 
 ## Entry 12 — Rejected AI suggestions
 

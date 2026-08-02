@@ -211,11 +211,23 @@ describe("an ineligible refund redirects to an escalation rather than failing", 
     expect(auditRows().filter((a) => a["outcome"] === "success")).toHaveLength(1);
   });
 
-  it("the cap is enforced above the schema max too", () => {
-    // The schema caps amount_cents at 15000, but the policy must reject
-    // independently — the schema is not the security boundary.
-    const e = proposeErr({ ...overCap, amount_cents: REFUND_CAP_CENTS + 1 });
-    expect(["amount_exceeds_cap", "invalid_input"]).toContain(e.error_code);
+  it("the policy enforces the cap independently of the schema", () => {
+    // The schema caps amount_cents at 15000, but the schema is NOT the security
+    // boundary — a caller reaching the handler directly must still be stopped. One
+    // cent over the cap fails check 1, and the redirect rule turns that into an
+    // escalation rather than an error, exactly as an over-cap request should.
+    const p = propose({ ...overCap, amount_cents: REFUND_CAP_CENTS + 1 });
+    expect(p.action).toBe("escalate");
+    expect(p.eligibility?.eligible).toBe(false);
+    expect(p.eligibility?.first_failure).toBe("amount_within_cap");
+  });
+
+  it("exactly the cap is not over it", () => {
+    // Boundary, asserted on the write path and not only in policy.test.ts.
+    const p = propose({ ...overCap, amount_cents: REFUND_CAP_CENTS });
+    const capCheck = (p.eligibility?.checks as Array<{ id: string; passed: boolean }> | undefined)
+      ?.find((c) => c.id === "amount_within_cap");
+    expect(capCheck?.passed).toBe(true);
   });
 });
 

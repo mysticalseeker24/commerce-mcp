@@ -146,6 +146,44 @@ export interface Queries {
   getInventory(sku: string): InventoryRow | undefined;
   getHoldsForSku(sku: string): HoldRow[];
   getAuditLog(orderId: string | null, limit: number): AuditRowRead[];
+
+  /* ---- write path (Phase 4) --------------------------------------------- */
+  insertProposal(row: ProposalRow): void;
+  getProposal(proposalId: string): ProposalRow | undefined;
+  /**
+   * The concurrency guard. Conditional on `status = 'pending'`, so of two
+   * simultaneous callers exactly one sees a changed row.
+   * @returns rows affected: 1 = this caller won, 0 = already executed or unknown.
+   */
+  claimProposal(proposalId: string): number;
+  markProposalExpired(proposalId: string): void;
+  /** Adds to `refunded_cents`; never overwrites `status`. */
+  applyRefund(paymentId: string, amountCents: number): void;
+  appendEvent(orderId: string, timestamp: string, source: string, eventType: string, detail: string): void;
+  insertEscalation(row: EscalationRow): void;
+}
+
+export interface ProposalRow {
+  id: string;
+  order_id: string;
+  action: string;
+  target_id: string;
+  amount_cents: number | null;
+  action_key: string | null;
+  reasoning: string;
+  order_state_snapshot: string;
+  status: string;
+  created_at: string;
+}
+
+export interface EscalationRow {
+  id: string;
+  order_id: string;
+  proposal_id: string | null;
+  kind: string;
+  reason: string;
+  evidence: string;
+  created_at: string;
 }
 
 export function createQueries(db: Db): Queries {
@@ -225,6 +263,35 @@ export function createQueries(db: Db): Queries {
      ORDER BY a.id DESC LIMIT ?`,
   );
 
+  /* ---- write path -------------------------------------------------------- */
+  const insertProposalStmt = db.prepare(
+    `INSERT INTO proposals
+       (id, order_id, action, target_id, amount_cents, action_key, reasoning,
+        order_state_snapshot, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const selectProposal = db.prepare<[string], ProposalRow>("SELECT * FROM proposals WHERE id = ?");
+  // THE concurrency guard. Two callers, one winner — enforced by the WHERE clause,
+  // not by application logic that could be reordered or forgotten.
+  const claimProposalStmt = db.prepare<[string]>(
+    "UPDATE proposals SET status = 'executed' WHERE id = ? AND status = 'pending'",
+  );
+  const expireProposalStmt = db.prepare<[string]>(
+    "UPDATE proposals SET status = 'expired' WHERE id = ?",
+  );
+  // Adds to refunded_cents; status is deliberately untouched, so a partial refund
+  // against a larger capture never reads as a full one.
+  const applyRefundStmt = db.prepare<[number, string]>(
+    "UPDATE payments SET refunded_cents = refunded_cents + ? WHERE id = ?",
+  );
+  const insertEventStmt = db.prepare<[string, string, string, string, string]>(
+    "INSERT INTO order_events (order_id, timestamp, source, event_type, detail) VALUES (?, ?, ?, ?, ?)",
+  );
+  const insertEscalationStmt = db.prepare(
+    `INSERT INTO escalations (id, order_id, proposal_id, kind, reason, evidence, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+
   const filterParams = (f: OrderSearchFilters): Record<string, string | number | null> => ({
     order_id: f.order_id,
     customer_email: f.customer_email,
@@ -263,5 +330,28 @@ export function createQueries(db: Db): Queries {
       orderId === null
         ? selectAuditAll.all(limit)
         : selectAuditForOrder.all(orderId, orderId, limit),
+
+    insertProposal: (row) => {
+      insertProposalStmt.run(
+        row.id, row.order_id, row.action, row.target_id, row.amount_cents,
+        row.action_key, row.reasoning, row.order_state_snapshot, row.status, row.created_at,
+      );
+    },
+    getProposal: (proposalId) => selectProposal.get(proposalId),
+    claimProposal: (proposalId) => claimProposalStmt.run(proposalId).changes,
+    markProposalExpired: (proposalId) => {
+      expireProposalStmt.run(proposalId);
+    },
+    applyRefund: (paymentId, amountCents) => {
+      applyRefundStmt.run(amountCents, paymentId);
+    },
+    appendEvent: (orderId, timestamp, source, eventType, detail) => {
+      insertEventStmt.run(orderId, timestamp, source, eventType, detail);
+    },
+    insertEscalation: (row) => {
+      insertEscalationStmt.run(
+        row.id, row.order_id, row.proposal_id, row.kind, row.reason, row.evidence, row.created_at,
+      );
+    },
   };
 }

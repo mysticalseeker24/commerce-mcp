@@ -8,6 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Queries } from "./db/queries.js";
 import type { InstrumentOptions } from "./instrument.js";
 import { registerReadTools } from "./tools/read.js";
+import { registerWriteTools } from "./tools/write.js";
 
 export interface ServerDeps {
   queries: Queries;
@@ -28,7 +29,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
   );
 
   registerReadTools(server, deps.queries, deps.instrument);
-  // Write tools land in Phase 4, after their tests.
+  registerWriteTools(server, deps.queries, deps.instrument);
 
   return server;
 }

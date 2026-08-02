@@ -6,8 +6,11 @@ a deploy problem found at hour four is fatal.
 ## 1. Create the service
 
 Railway → New Project → Deploy from GitHub repo → `mysticalseeker24/commerce-mcp`.
-`railway.json` already pins the build and start commands and points the healthcheck
-at `/health`, so no dashboard build config is needed.
+
+`nixpacks.toml` pins the install/build/start phases and `railway.json` pins the
+deploy settings, so **no dashboard build configuration is needed**. Both files carry
+the reasoning inline; the short version is in [Troubleshooting](#troubleshooting)
+below, because the first deploy failed on exactly this.
 
 ## 2. Generate a token
 
@@ -79,6 +82,47 @@ order is refund-eligible. Then:
 
 Expect it to identify the duplicate capture and **not** propose a refund, because
 payment-processor state is diagnostic-only.
+
+## Troubleshooting
+
+### `gyp ERR! find Python  Could not find any Python installation to use`
+
+This killed the first deploy. Two independent problems, both fixed in
+`nixpacks.toml` — if you see either again, that file is where to look.
+
+**1. better-sqlite3 tried to compile from source.** Its tarball contains
+`binding.gyp`, so npm's implicit rule runs `node-gyp rebuild` even though the
+package publishes `gypfile: false`. The Nixpacks image has no Python or C++
+toolchain, so it dies at the configure step.
+
+The compile was never needed: better-sqlite3 v13 ships prebuilt Node-API binaries
+for eight platforms, `linux-x64` among them, and that is what the runtime loads.
+Verified locally — installing with `--ignore-scripts` produces no `build/` directory
+and the module still opens a database. Adding Python and a compiler to the image
+would also work, but it buys a multi-minute compile on every deploy in exchange for
+nothing.
+
+**2. `NPM_CONFIG_PRODUCTION=true`.** Railway sets it, which omits devDependencies —
+a second failure queued behind the first, since `tsc` would then be missing and
+`npm run build` would fail. `--include=dev` in the install phase handles it in the
+repo rather than in dashboard state.
+
+Note that `railway.json`'s `buildCommand` **cannot** fix this: the failure is in the
+*install* phase, which only `nixpacks.toml` governs. That is why `buildCommand` was
+removed — leaving it would have run a second, script-enabled `npm ci` and reproduced
+the bug.
+
+### Build succeeds but the server exits immediately
+
+Check `MCP_BEARER_TOKEN` is set. The server refuses to boot without it, by design —
+a misconfigured deploy should fail loudly rather than serve operational tools
+unauthenticated.
+
+### `ENOENT ... schema.sql`
+
+`tsc` emits only `.js`; `npm run build` also runs `scripts/copy-assets.mjs` to place
+`schema.sql` in `dist/db/`. If you overrode the build command in the dashboard, that
+step was probably lost.
 
 ## Notes
 

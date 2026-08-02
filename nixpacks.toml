@@ -1,0 +1,34 @@
+# Nixpacks build configuration.
+#
+# Exists to fix two things that broke the first Railway deploy. railway.json's
+# buildCommand only governs the BUILD phase; the failure was in the INSTALL phase,
+# which only this file can override.
+#
+# 1. --ignore-scripts
+#    better-sqlite3 ships `binding.gyp` in its tarball, so npm's implicit rule runs
+#    `node-gyp rebuild` even though the package publishes `gypfile: false`. The
+#    Nixpacks image has no Python, so that fails with:
+#        gyp ERR! find Python  Could not find any Python installation to use
+#    The compile is unnecessary regardless: better-sqlite3 v13 ships prebuilt
+#    Node-API binaries for linux-x64 (and seven other platforms) inside the package,
+#    and that is what the runtime loads. Verified locally — no build/ directory is
+#    produced and the module opens a database fine.
+#    Adding Python + a toolchain to the image would also work, but it trades a
+#    multi-minute compile on every deploy for nothing.
+#
+# 2. --include=dev
+#    Railway sets NPM_CONFIG_PRODUCTION=true, which omits devDependencies. That is
+#    a second failure queued behind the first: without it `tsc` is absent and
+#    `npm run build` dies. Passing the flag explicitly keeps the fix in the repo
+#    rather than in dashboard state nobody can see.
+
+providers = ["node"]
+
+[phases.install]
+cmds = ["npm ci --ignore-scripts --include=dev"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"

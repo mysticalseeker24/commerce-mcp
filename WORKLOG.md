@@ -321,7 +321,56 @@ Two smaller notes worth keeping:
 
 ---
 
-## Entry 10 — Verification evidence
+## Entry 10 — The deploy that failed, and why deploying early was the point
+
+**Phase 2 gate.** PLAN.md §Phase 2 says *"Deploy to Railway now, not at the end —
+deploy problems found at hour four are fatal."* This is that clause earning its
+keep.
+
+First Railway build failed:
+
+```
+npm error path /app/node_modules/better-sqlite3
+npm error command sh -c node-gyp rebuild
+npm error gyp ERR! find Python  Could not find any Python installation to use
+```
+
+**Diagnosis, rather than guessing.** The tempting reading is "Railway lacks Python,
+add Python." I checked why the two environments diverged instead, and the answer
+changed the fix:
+
+| Question | Finding |
+|---|---|
+| Does the package need compiling? | No. `better-sqlite3@13` ships prebuilt Node-API binaries for eight platforms including `linux-x64`. |
+| Did my machine compile it? | No `build/` directory exists locally — the runtime loads the shipped prebuild. |
+| Then why did npm invoke node-gyp? | `binding.gyp` is present in the tarball, and npm's implicit rule runs `node-gyp rebuild` for any package containing one with no explicit install script — despite the package publishing `gypfile: false`. |
+
+So installing Python and a C++ toolchain would have "worked" while trading a
+multi-minute compile on every deploy for a binary that was already in the package.
+The right fix was `npm ci --ignore-scripts`, verified locally: 237 packages, no
+`build/` directory, module opens a database, 89 tests still green.
+
+**A second failure was queued behind the first.** The log carried
+`npm warn config production`, meaning Railway sets `NPM_CONFIG_PRODUCTION=true` and
+omits devDependencies. Fixing only the gyp error would have produced a fresh failure
+one step later, when `npm run build` could not find `tsc`. Reading the whole log
+rather than the error line caught it before a second failed deploy.
+
+**A third thing the fix had to account for:** `railway.json`'s `buildCommand` cannot
+resolve any of this, because the failure is in Nixpacks' *install* phase, which only
+`nixpacks.toml` governs. The original `buildCommand` was removed too — left in place
+it would have run a second, script-enabled `npm ci` and reproduced the bug after
+`nixpacks.toml` had fixed it.
+
+**What this cost:** one failed build, roughly fifteen minutes, at a point where
+there is time to absorb it. Had the first deploy been attempted after Phase 5, the
+same three-layer problem would have surfaced with the submission deadline in view.
+The configuration now lives in the repo with its reasoning inline, so it is
+reproducible rather than dashboard folklore.
+
+---
+
+## Entry 11 — Verification evidence
 
 ### Phase 0 — the toolchain gate, and why it was worth running
 
@@ -363,7 +412,7 @@ runs on any given runtime.
 *(Later phases: seed hand-review notes, test-first commit hash, Tier-3 transcript
 summary, tool-description iterations)*
 
-## Entry 11 — Rejected AI suggestions
+## Entry 12 — Rejected AI suggestions
 
 ### Prose-parsing the refund amount out of event text
 
@@ -403,6 +452,6 @@ Worth noting *why the tests caught it*: they assert `discrepancy_cents === 3000`
 not of the implementation. A test written as "returnedValueCents parses the detail
 string" would have passed against the broken design.
 
-## Entry 12 — Remaining risks and next steps
+## Entry 13 — Remaining risks and next steps
 
 *(feeds the README section of the same name)*

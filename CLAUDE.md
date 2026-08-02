@@ -30,9 +30,15 @@ All authoritative design docs live in `.agent/`. Read them **in this order**:
 - **TypeScript strict mode.** No `any`. No `@ts-ignore`.
 - **Only synthetic data.** Everything comes from `src/db/seed.ts`. Never invent
   records outside the seed spec.
-- **The 8 broken-scenario orders (ORD-1001 … ORD-1008) are fixtures.** Their IDs,
+- **The 11 broken-scenario orders (ORD-1001 … ORD-1011) are fixtures.** Their IDs,
   states, amounts, and event histories are load-bearing — tests and the demo
   script depend on them. Never change them without explicit approval.
+- **USD, integer cents.** `formatCents()` in `src/money.ts` is the only place money
+  is formatted. No floating-point money, ever.
+- **Two executable actions only: `refund` and `escalate`.** Payment-processor state
+  is diagnostic-only — no retry, void, capture, or processor-side refund exists.
+  Refunds execute only when all six checks in `src/policy.ts` pass, re-evaluated at
+  execute time. Everything else is an evidence-bearing escalation.
 - **Writes only via propose → execute.** There is no tool that directly mutates
   order/payment state. Do not add one.
 - **Every mutation writes an audit row** with before/after state snapshots,
@@ -65,12 +71,19 @@ src/
   tools/read.ts     # search_orders, get_order_timeline, get_payment_details,
                     # check_inventory, get_audit_log
   tools/write.ts    # propose_resolution, execute_resolution
-  db/schema.sql     # DDL for all 8 tables
-  db/seed.ts        # deterministic seed: ~240 healthy orders + 8 fixed broken scenarios
+  db/schema.sql     # DDL for all 10 tables
+  db/seed.ts        # deterministic seed: 239 healthy orders + 11 fixed broken scenarios
   db/queries.ts     # all prepared statements live here — nowhere else
+  policy.ts         # refund eligibility: six conjunctive checks + action_key
+  money.ts          # formatCents — the only money formatting in the project
+  time.ts           # boot-relative clock helpers
+  env.ts            # Zod-validated environment
+  auth.ts           # constant-time token verification
+  errors.ts         # the one {error_code, message, hint} shape
   audit.ts          # audit-row writer (called inside write transactions)
   instrument.ts     # tool-call wrapper: requestId, timing, structured pino logs
 tests/
+  policy.test.ts      # the six eligibility checks, each failing in isolation
   resolution.test.ts  # gating, idempotency, caps, concurrency, staleness
   timeline.test.ts    # event ordering and cross-system completeness
   http.test.ts        # transport: tools/list, auth rejection, full round trip

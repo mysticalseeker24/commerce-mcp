@@ -25,7 +25,7 @@ export interface AuditRow {
   proposal_id: string | null;
   action: string;
   target_id: string;
-  amount_paise: number | null;
+  amount_cents: number | null;
   /** JSON snapshot taken before the mutation. */
   before_state: string;
   /** JSON snapshot taken after. Equal to before_state on rejections. */

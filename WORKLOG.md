@@ -16,7 +16,7 @@ supplied to Claude Code, authored first and treated as authoritative:
 
 | Doc | Role |
 |---|---|
-| [`.agent/SPEC.md`](.agent/SPEC.md) | Product scope, architecture, data model, the 8 seeded failure scenarios |
+| [`.agent/SPEC.md`](.agent/SPEC.md) | Product scope, architecture, data model, the seeded failure scenarios |
 | [`.agent/TOOLS.md`](.agent/TOOLS.md) | Exact MCP tool surface — names, schemas, and the agent-facing description copy |
 | [`.agent/CONVENTIONS.md`](.agent/CONVENTIONS.md) | Threat model and coding rules, stated as hard requirements |
 | [`.agent/PLAN.md`](.agent/PLAN.md) | Build order, phase gates, the verification checklist |
@@ -135,7 +135,116 @@ sounding decisive.
 
 ---
 
-## Entry 4 — Verification evidence
+## Entry 4 — Client redirect absorbed mid-build
+
+**Phase:** between 0 and 1 · **Rework: ≈40 min**
+
+The client narrowed execution scope after the build had started: payment-processor
+actions become diagnostic-only, and execution is permitted **solely** for a
+policy-eligible order refund under six named constraints. Everything else becomes an
+evidence-bearing escalation.
+
+**What survived unchanged: the propose→execute skeleton.** That is the whole story
+of why this was cheap. The write path was already a two-stage gate with a stored
+proposal, a staleness snapshot, a conditional-update idempotency guard, and audit
+rows on both branches. Narrowing *what may be executed* did not touch any of that.
+
+**What actually changed:**
+
+| Before | After |
+|---|---|
+| Six executable actions | Two: `refund \| escalate` |
+| `retry_refund` | Removed entirely — it is a processor mutation |
+| Action/state compatibility matrix | Six-check policy engine (`src/policy.ts`) |
+| Escalation = a recorded recommendation | Escalation = a row with an auto-assembled evidence packet |
+| 8 fixtures | 11 — three new ones so each policy check has its own failure case |
+
+The rework was confined to Phase 1 fixtures and Phase 4 semantics. Had the write
+path been a direct-mutation tool with per-action branches, this same redirect would
+have meant rewriting the mutation surface itself. The gate is what made the change
+cheap — an argument for the architecture that I did not have to make hypothetically.
+
+**Judgment call worth naming:** an ineligible refund request returns an *executable
+escalation proposal*, not an error. Refusing outright would leave the analyst with
+nothing to do and push them back toward the engineering ticket this product exists
+to eliminate. `no_action_needed` stays an error, because a healthy order genuinely
+needs no action.
+
+---
+
+## Entry 5 — Unconfirmed interpretation, chosen conservatively
+
+The instruction — "gated execution is appropriate only for an eligible order
+refund … otherwise create a manager-approval escalation" — is genuinely ambiguous
+for order-system actions that never touch the payment processor: confirming a
+paid-but-failed order (ORD-1001), cancelling an unpaid one (ORD-1005), releasing an
+orphaned hold (ORD-1004). None of these move money. A reasonable reading permits
+them; a strict reading does not.
+
+**Chose the strict reading: those escalate too.** Rationale: in an operational tool
+wired to a language model, under-executing is the safer error. An escalation still
+produces a recorded, actionable artifact for the analyst, so the cost of being wrong
+in this direction is a slower resolution — versus an unauthorized state change if
+wrong in the other.
+
+The client did not confirm this. It is documented as an assumption in the README and
+CONVENTIONS.md A2.6 rather than silently resolved, because the distinction between
+"the client said this" and "we inferred this" is exactly what a reviewer needs to
+audit. The loose reading is a two-line change to the action enum plus its
+state-machine branches.
+
+---
+
+## Entry 6 — Currency migration, not currency conversion
+
+Switched INR/paise to USD/cents to match the units the client's policy is written
+in. The alternative — keeping paise and converting the $150.00 cap to an approximate
+rupee constant — was rejected outright: it would make a **policy bound** an
+approximation, and every eligibility decision at the boundary would inherit that
+rounding error.
+
+Done at the Phase 0/1 seam, before fixtures were final, which is the cheapest moment
+it could have happened. Touched every `*_cents` field name across schema, tool
+outputs, cursors and tests; replaced `formatPaise`/`en-IN`/`₹` with
+`formatCents`/`en-US`/`$`; regenerated healthy-order amounts into a plausible
+$9.99–$499.00 range.
+
+Deliberately *not* changed: customer names and emails stay Indian. They carry no
+semantics for the model, and churning them would have produced a large diff with no
+information in it.
+
+---
+
+## Entry 7 — `action_key`: a refinement the spec didn't ask for
+
+Check 6 is stated as "no refund already exists for the same eligible action." That
+sentence contains an undefined term — *same action* — and the definition is not
+cosmetic. ORD-1007 carries a prior, unrelated $50.00 partial refund. Under the naive
+reading ("this order already has a refund"), the legitimate $30.00
+carrier-exception refund would be falsely blocked, and the one executable fixture in
+the entire product would not execute.
+
+Defined `action_key = refund:<order_id>:<carrier_exception_id>`, stored on
+`proposals` and `audit_log` and enforced by:
+
+```sql
+CREATE UNIQUE INDEX audit_log_action_key_executed
+  ON audit_log(action_key) WHERE action_key IS NOT NULL AND outcome = 'success';
+```
+
+Two consequences worth stating. The duplicate check becomes **precise** — it asks
+"has *this specific remedy* already been paid?" rather than "has anything been
+refunded here?" And idempotency becomes **mechanical**: a partial unique index means
+a duplicate refund is refused by the database even if every application-level guard
+were bypassed. That is a stronger guarantee than a check, because it does not depend
+on the check running.
+
+The partial predicate (`outcome = 'success'`) matters too — without it, a rejected
+attempt would occupy the key and permanently block the legitimate retry.
+
+---
+
+## Entry 8 — Verification evidence
 
 ### Phase 0 — the toolchain gate, and why it was worth running
 
@@ -177,11 +286,11 @@ runs on any given runtime.
 *(Later phases: seed hand-review notes, test-first commit hash, Tier-3 transcript
 summary, tool-description iterations)*
 
-## Entry 5 — Rejected AI suggestions
+## Entry 9 — Rejected AI suggestions
 
 *(the first substantive one gets recorded here; candidates expected in Phase 1 seed
 generation and Phase 4 money math)*
 
-## Entry 6 — Remaining risks and next steps
+## Entry 10 — Remaining risks and next steps
 
 *(feeds the README section of the same name)*

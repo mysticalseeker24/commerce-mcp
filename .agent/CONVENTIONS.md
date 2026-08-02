@@ -12,13 +12,15 @@ stop and ask — do not silently deviate.
 | Threat | Defense | Layer |
 |---|---|---|
 | Anyone with the URL calling operational tools | Bearer token on every request | Transport |
-| Malformed / out-of-domain inputs | Zod `.strict()` schemas, regex-pinned IDs, enums, integer paise, caps | Input |
+| Malformed / out-of-domain inputs | Zod `.strict()` schemas, regex-pinned IDs, enums, integer cents, caps | Input |
 | SQL injection | Prepared statements exclusively (better-sqlite3 parameter binding) — **note: this is what prevents injection, not Zod; Zod prevents malformed inputs. Attribute correctly in docs** | Data |
 | Prompt injection via stored data (customer notes) | (a) untrusted-content wrapping in tool outputs, (b) no direct-mutation tool exists, (c) propose→execute human gate | Tool-surface design |
 | Duplicate / replayed mutations | Conditional-update idempotency on proposals; at-most-once execution | Write path |
 | Concurrent execution race | Same conditional update inside a transaction — two callers, one winner | Write path |
 | Stale action on changed state | Proposal state snapshot vs. current state check at execute time | Write path |
-| Excessive blast radius | Refund hard cap (₹10,000/resolution), refundable-amount ceiling, action/state compatibility matrix, no bulk operations | Write path |
+| Excessive blast radius | **Six-check refund eligibility policy** ($150.00 cap, ≤ amount paid, order ≤30d old, customer risk <70, verified carrier exception on file, no duplicate `action_key`) — re-evaluated at execute time, never trusted from the proposal. Plus: only two executable actions, no bulk operations | Write path (`src/policy.ts`) |
+| Automated "fixes" to payment-processor state | Processor actions are diagnostic-only. No retry, void, capture, or processor-side refund tool exists. Duplicate charges produce an evidence-bearing escalation | Tool-surface design |
+| Duplicate refunds surviving an application-logic bug | `UNIQUE INDEX audit_log(action_key) WHERE outcome='success'` — refused by the database, not by a check | Data |
 | Unaccountable actions | Append-only audit log w/ before+after snapshots, written in the same transaction | Audit |
 
 ### A2. Known limitations (state these in the README — naming them is the point)
@@ -44,6 +46,16 @@ stop and ask — do not silently deviate.
    mitigated by HTTPS-at-edge, a single-purpose synthetic-data token, and
    one-command rotation via a Railway env var. The header path is the recommended
    channel.
+6. **The strict reading of the client's execution scope is an assumption, not a
+   confirmation.** "Gated execution is appropriate only for an eligible order
+   refund … otherwise create a manager-approval escalation" is ambiguous for
+   order-system actions that never touch the payment processor: confirming a
+   paid-but-failed order, cancelling an unpaid one, releasing an orphaned hold. We
+   chose the strict reading — those escalate too — because under-executing is the
+   safer error in an operational tool, and an escalation still gives the analyst a
+   recorded, actionable artifact. The client did not confirm this. The loose
+   reading is a two-line change to the action enum plus their state-machine
+   branches. Stated in the README rather than resolved silently.
 
 ### A3. Security implementation rules
 
@@ -83,9 +95,13 @@ stop and ask — do not silently deviate.
   `@ts-ignore`. If a type fight occurs, fix the type, not the check.
 - All Zod schemas defined once in the tool modules; derive TS types via
   `z.infer<>`. Never hand-write a type that a schema already defines.
-- Money is `number` (integer paise) at boundaries — validated integer via Zod.
-  A `formatPaise(paise: number): string` helper produces `₹X,XXX.XX` display
-  strings; it is the only place formatting happens.
+- Money is `number` (integer cents, USD) at boundaries — validated integer via Zod.
+  A `formatCents(cents: number): string` helper produces `$X,XXX.XX` display
+  strings via `Intl.NumberFormat('en-US', {style:'currency', currency:'USD'})`;
+  it is the only place formatting happens.
+- Policy constants (`REFUND_CAP_CENTS`, `MAX_ORDER_AGE_DAYS`,
+  `RISK_SCORE_THRESHOLD`) live in `src/policy.ts` and are referenced, never
+  re-typed as literals at call sites or in tests.
 - Timestamps: ISO-8601 UTC strings everywhere. One helper module (`time.ts`)
   owns `now()` and boot-relative offsets so tests can control the clock.
 

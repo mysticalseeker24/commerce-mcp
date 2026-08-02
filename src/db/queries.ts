@@ -80,6 +80,7 @@ export interface CarrierExceptionRow {
   type: string;
   verified: number;
   verified_at: string | null;
+  claim_value_cents: number;
   source: string;
   created_at: string;
 }
@@ -93,6 +94,12 @@ export interface Queries {
   getEventsForOrder(orderId: string): OrderEventRow[];
   getCarrierExceptionsForOrder(orderId: string): CarrierExceptionRow[];
   countOrders(): number;
+  /**
+   * action_keys of refunds that actually executed. Feeds eligibility check 6.
+   * Filtered to successful rows, matching the partial unique index — a rejected
+   * attempt must not permanently block the legitimate retry.
+   */
+  getExecutedRefundActionKeys(): string[];
 }
 
 export function createQueries(db: Db): Queries {
@@ -111,6 +118,9 @@ export function createQueries(db: Db): Queries {
     "SELECT * FROM carrier_exceptions WHERE order_id = ? ORDER BY id",
   );
   const selectOrderCount = db.prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM orders");
+  const selectExecutedRefundKeys = db.prepare<[], { action_key: string }>(
+    "SELECT action_key FROM audit_log WHERE action_key IS NOT NULL AND outcome = 'success'",
+  );
 
   return {
     db,
@@ -121,5 +131,6 @@ export function createQueries(db: Db): Queries {
     getEventsForOrder: (orderId) => selectEvents.all(orderId),
     getCarrierExceptionsForOrder: (orderId) => selectCarrierExceptions.all(orderId),
     countOrders: () => selectOrderCount.get()?.c ?? 0,
+    getExecutedRefundActionKeys: () => selectExecutedRefundKeys.all().map((r) => r.action_key),
   };
 }

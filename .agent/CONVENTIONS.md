@@ -90,9 +90,19 @@ stop and ask — do not silently deviate.
 
 ### B1. TypeScript
 
-- `"strict": true`, plus `noUncheckedIndexedAccess: true`,
-  `exactOptionalPropertyTypes: true`. No `any`, no `as unknown as`, no
-  `@ts-ignore`. If a type fight occurs, fix the type, not the check.
+- `"strict": true`, plus `noUncheckedIndexedAccess: true`. No `any`, no
+  `as unknown as`, no `@ts-ignore`. If a type fight occurs, fix the type, not the
+  check.
+- **`exactOptionalPropertyTypes` is OFF**, and this is the one strictness rule that
+  was relaxed. MCP SDK 1.30's `StreamableHTTPServerTransport` exposes
+  `onclose`/`onerror`/`onmessage` as getter/setter pairs typed `| undefined`, so the
+  class does not satisfy the SDK's own `Transport` interface under the flag —
+  `server.connect(transport)` fails to typecheck. Verified unresolvable without a
+  banned construct: subclass re-declaration errors `TS2610` (accessor overridden as
+  property), declaration merging cannot retype an existing member, and `onmessage`
+  carries a second, independent generic-signature conflict. Dropped for a named
+  third-party incompatibility; every other strictness rule stands, and the ban on
+  `any`/casts/`@ts-ignore` is unaffected.
 - All Zod schemas defined once in the tool modules; derive TS types via
   `z.infer<>`. Never hand-write a type that a schema already defines.
 - Money is `number` (integer cents, USD) at boundaries — validated integer via Zod.

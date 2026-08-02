@@ -365,8 +365,43 @@ summary, tool-description iterations)*
 
 ## Entry 11 — Rejected AI suggestions
 
-*(the first substantive one gets recorded here; candidates expected in Phase 1 seed
-generation and Phase 4 money math)*
+### Prose-parsing the refund amount out of event text
+
+**Phase 2. My own first draft, caught by the Tier-1b tests.**
+
+`discrepancy_cents` needs to know the value of goods that came back. I wrote
+`returnedValueCents()` to regex `$([\d,]+\.\d{2})` out of `order_events.detail`,
+scanning `return_received`, `damage_verified`, and `lost_in_transit` events. It
+typechecked, it read plausibly, and I shipped it into `get_order_timeline`.
+
+Four Tier-1b tests failed immediately, and the failures exposed two independent
+defects:
+
+1. **The amount is on a different event type per scenario.** ORD-1007 and ORD-1010
+   record the value on `return_initiated` ("valued at $80.00"); their
+   `return_received` events carry no figure at all. So the parse returned 0, the
+   discrepancy went *negative*, and ORD-1007 — the single executable case in the
+   product — evaluated eligibility against the full $150.00 refundable instead of
+   the $30.00 gap.
+2. **ORD-1009 records the value twice**, on `damage_reported` and `damage_verified`.
+   A parse that had matched both event types would have silently double-counted to
+   $360.00.
+
+The tempting fix was to widen the event-type set and dedupe. Rejected: that keeps a
+**money figure dependent on how a sentence was worded**, and this figure directly
+determines what the product refunds. Any future copy edit to a seed string would
+change a payout.
+
+**Replaced with structured data:** `carrier_exceptions.claim_value_cents`. The
+carrier exception is what justifies a refund, so the amount it accounts for belongs
+on that row. Verified exceptions contribute; unverified ones contribute nothing,
+because an unconfirmed claim is not a debt. All four tests passed without touching
+the assertions.
+
+Worth noting *why the tests caught it*: they assert `discrepancy_cents === 3000` and
+`first_failure === "customer_risk_below_threshold"` — properties of the **domain**,
+not of the implementation. A test written as "returnedValueCents parses the detail
+string" would have passed against the broken design.
 
 ## Entry 12 — Remaining risks and next steps
 

@@ -76,6 +76,8 @@ export interface FixtureCarrierException {
   type: CarrierExceptionType;
   verified: boolean;
   verified_at: Offset | null;
+  /** Value of goods this exception accounts for; drives discrepancy_cents. */
+  claim_value_cents: number;
   source: string;
   at: Offset;
 }
@@ -339,6 +341,7 @@ const ORD_1007: Fixture = {
   carrier_exceptions: [
     {
       id: "CE-004",
+      claim_value_cents: 8_000,
       type: "return_received",
       verified: true,
       verified_at: days(2),
@@ -419,7 +422,8 @@ const ORD_1009: Fixture = {
   ],
   holds: [{ id: "HOLD-3009", sku: "SKU-0004", qty: 1, status: "consumed", at: days(8) }],
   carrier_exceptions: [
-    { id: "CE-009", type: "damaged_on_arrival", verified: true, verified_at: days(2), source: "delhivery_claims", at: days(3) },
+    { id: "CE-009",
+      claim_value_cents: 18_000, type: "damaged_on_arrival", verified: true, verified_at: days(2), source: "delhivery_claims", at: days(3) },
   ],
   events: [
     { at: hours(192), source: "orders", event_type: "order_created", detail: "Order ORD-1009 created for $420.00" },
@@ -454,7 +458,8 @@ const ORD_1010: Fixture = {
   ],
   holds: [{ id: "HOLD-3010", sku: "SKU-0016", qty: 1, status: "consumed", at: days(12) }],
   carrier_exceptions: [
-    { id: "CE-010", type: "return_received", verified: true, verified_at: days(3), source: "bluedart_returns_api", at: days(4) },
+    { id: "CE-010",
+      claim_value_cents: 4_000, type: "return_received", verified: true, verified_at: days(3), source: "bluedart_returns_api", at: days(4) },
   ],
   events: [
     { at: hours(288), source: "orders", event_type: "order_created", detail: "Order ORD-1010 created for $160.00" },
@@ -489,7 +494,8 @@ const ORD_1011: Fixture = {
   ],
   holds: [{ id: "HOLD-3011", sku: "SKU-0012", qty: 1, status: "consumed", at: days(45) }],
   carrier_exceptions: [
-    { id: "CE-011", type: "lost_in_transit", verified: true, verified_at: days(35), source: "bluedart_tracking", at: days(38) },
+    { id: "CE-011",
+      claim_value_cents: 6_000, type: "lost_in_transit", verified: true, verified_at: days(35), source: "bluedart_tracking", at: days(38) },
   ],
   events: [
     { at: hours(1080), source: "orders", event_type: "order_created", detail: "Order ORD-1011 created for $240.00" },

@@ -167,7 +167,7 @@ function seed(db: Db): void {
     "INSERT INTO order_events (order_id, timestamp, source, event_type, detail) VALUES (?, ?, ?, ?, ?)",
   );
   const insertCarrierException = db.prepare(
-    "INSERT INTO carrier_exceptions (id, order_id, type, verified, verified_at, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO carrier_exceptions (id, order_id, type, verified, verified_at, claim_value_cents, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const bumpReserved = db.prepare(
     "UPDATE inventory SET reserved = reserved + ? WHERE sku = ?",
@@ -235,6 +235,7 @@ function seed(db: Db): void {
           ce.type,
           ce.verified ? 1 : 0,
           ce.verified_at === null ? null : at(ce.verified_at, t0),
+          ce.claim_value_cents,
           ce.source,
           at(ce.at, t0),
         );
@@ -328,6 +329,7 @@ function seed(db: Db): void {
           "delivery_failed",
           0,
           null,
+          0,
           "carrier_webhook",
           hoursAgoIso(Math.max(ageHours - 36, 0), t0),
         );

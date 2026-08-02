@@ -12,7 +12,12 @@
        No `any`, no `as unknown as`, no `@ts-ignore`. Fix the type, not the check. */
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
+    /* exactOptionalPropertyTypes is deliberately OFF — see CONVENTIONS.md B1.
+       MCP SDK 1.30's StreamableHTTPServerTransport declares onclose/onerror/
+       onmessage as `| undefined` accessors, so it does not satisfy the SDK's own
+       Transport interface under the flag. Not resolvable by subclassing (TS2610),
+       module augmentation, or any non-banned construct. Removed for a named
+       third-party incompatibility, not to loosen our own code. */
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,

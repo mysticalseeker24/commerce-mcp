@@ -64,6 +64,10 @@ CREATE TABLE carrier_exceptions (
               ('return_received','lost_in_transit','damaged_on_arrival','delivery_failed')),
   verified    INTEGER NOT NULL DEFAULT 0,
   verified_at TEXT,
+  -- Value of goods this exception accounts for. Structured rather than parsed out
+  -- of event prose: this figure drives discrepancy_cents and therefore the refund
+  -- amount, so it must not depend on how a sentence was worded.
+  claim_value_cents INTEGER NOT NULL DEFAULT 0 CHECK (claim_value_cents >= 0),
   source      TEXT NOT NULL,             -- carrier/system that reported it
   created_at  TEXT NOT NULL
 );

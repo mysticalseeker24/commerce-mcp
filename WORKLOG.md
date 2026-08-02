@@ -244,7 +244,39 @@ attempt would occupy the key and permanently block the legitimate retry.
 
 ---
 
-## Entry 8 — Verification evidence
+## Entry 8 — Diagnostics ambiguity surfaced, not silently resolved
+
+**Phase:** 1 gate · **Second instance of the pattern in [Entry 5](#entry-5).**
+
+Reading the Phase 1 fixture dump turned up a case the spec doesn't decide:
+**ORD-1001 has an `active` inventory hold on a `failed` order.** ORD-1004 —
+the designated orphaned-hold fixture — has an `active` hold on a `cancelled`
+order. So does `ORPHANED_HOLD` fire on ORD-1001 too?
+
+It matters because Tier-1b asserts one flag per fixture. The tempting resolution is
+the test-convenient one: scope `ORPHANED_HOLD` to `cancelled` so ORD-1001 stays
+cleanly `CAPTURED_BUT_FAILED` and the checklist passes. That would be fitting the
+definition to the test — the diagnostic would mean "whatever keeps the suite green."
+
+Surfaced it at the gate instead of picking. Adjudicated on the semantics:
+
+> **`ORPHANED_HOLD` means a hold that can never be consumed** — inventory held
+> against an order that has reached a terminal state and will never ship.
+
+Under that definition `cancelled` qualifies and `failed` does not, because a failed
+order can be confirmed and go on to consume its hold — which is exactly ORD-1001's
+correct remedy. ORD-1001's active hold is *pending*, not orphaned. The scoping falls
+out of the definition rather than the definition being reverse-engineered from the
+scoping, and it survives contact with a case neither of us has thought of yet.
+
+The distinction worth recording is not the answer but the sequence: the ambiguity
+was raised before any code committed to a reading, and it was settled on a principle
+that generalizes. Same shape as Entry 5 — AI escalates, human adjudicates, the
+reasoning goes in writing.
+
+---
+
+## Entry 9 — Verification evidence
 
 ### Phase 0 — the toolchain gate, and why it was worth running
 
@@ -286,11 +318,11 @@ runs on any given runtime.
 *(Later phases: seed hand-review notes, test-first commit hash, Tier-3 transcript
 summary, tool-description iterations)*
 
-## Entry 9 — Rejected AI suggestions
+## Entry 10 — Rejected AI suggestions
 
 *(the first substantive one gets recorded here; candidates expected in Phase 1 seed
 generation and Phase 4 money math)*
 
-## Entry 10 — Remaining risks and next steps
+## Entry 11 — Remaining risks and next steps
 
 *(feeds the README section of the same name)*

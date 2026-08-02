@@ -144,7 +144,29 @@ const entry = process.argv[1];
 const isEntrypoint = entry !== undefined && import.meta.url === pathToFileURL(entry).href;
 
 if (isEntrypoint) {
-  const env = loadEnv();
+  // A missing or malformed variable is an operator error, not a crash. Print
+  // something actionable and exit 1 — a V8 stack trace pointing into env.js tells
+  // whoever is deploying nothing they can use.
+  let env;
+  try {
+    env = loadEnv();
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    process.stderr.write(
+      `\n${"-".repeat(64)}\n` +
+        `commerce-ops-mcp cannot start.\n\n` +
+        `${detail}\n\n` +
+        `Set the missing variables on your host, then redeploy.\n` +
+        `MCP_BEARER_TOKEN is required and has no default, deliberately: booting\n` +
+        `without it would serve operational tools unauthenticated.\n\n` +
+        `Generate one with:\n` +
+        `  node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"\n` +
+        `See DEPLOY.md for the full variable list.\n` +
+        `${"-".repeat(64)}\n\n`,
+    );
+    process.exit(1);
+  }
+
   const logger = createLogger(env.LOG_LEVEL);
   const db = createDb(env.DB_PATH);
   const queries = createQueries(db);

@@ -13,6 +13,7 @@
  *
  * A new StreamableHTTPServerTransport is created per request — no session state.
  */
+import { pathToFileURL } from "node:url";
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import type { Logger } from "pino";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -133,8 +134,14 @@ export function createApp(deps: AppDeps): Express {
 
 /* -------------------------------------------------------------------------- *
  * Boot. Skipped when imported by tests.
+ *
+ * Compares this module's URL against the script node was actually invoked with, so
+ * it works identically for `node dist/index.js` and `tsx src/index.ts`. An earlier
+ * version tested for a literal "index.js" suffix, which silently disabled `npm run
+ * dev` — the file is index.ts there.
  * -------------------------------------------------------------------------- */
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url.endsWith("index.js");
+const entry = process.argv[1];
+const isEntrypoint = entry !== undefined && import.meta.url === pathToFileURL(entry).href;
 
 if (isEntrypoint) {
   const env = loadEnv();

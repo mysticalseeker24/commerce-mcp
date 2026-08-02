@@ -54,6 +54,11 @@ export interface FixturePayment {
   gateway_ref: string;
   status: PaymentStatus;
   amount_cents: number;
+  /**
+   * Cents already committed to refunds — settled or in flight. Omitted means 0.
+   * refundable_cents = amount_cents - refunded_cents.
+   */
+  refunded_cents?: number;
   method: PaymentMethod;
   at: Offset;
 }
@@ -193,7 +198,7 @@ const ORD_1003: Fixture = {
   created: days(6),
   notes: null,
   payments: [
-    { id: "PAY-2004", gateway_ref: "ch_1003A", status: "refund_initiated", amount_cents: 8_950, method: "card", at: days(6) },
+    { id: "PAY-2004", gateway_ref: "ch_1003A", status: "refund_initiated", amount_cents: 8_950, refunded_cents: 8_950, method: "card", at: days(6) },
   ],
   holds: [{ id: "HOLD-3003", sku: "SKU-0005", qty: 2, status: "released", at: days(6) }],
   carrier_exceptions: [],
@@ -224,7 +229,7 @@ const ORD_1004: Fixture = {
   created: days(8),
   notes: null,
   payments: [
-    { id: "PAY-2005", gateway_ref: "ch_1004A", status: "refunded", amount_cents: 12_500, method: "paypal", at: days(8) },
+    { id: "PAY-2005", gateway_ref: "ch_1004A", status: "refunded", amount_cents: 12_500, refunded_cents: 12_500, method: "paypal", at: days(8) },
   ],
   holds: [{ id: "HOLD-3004", sku: "SKU-0007", qty: 3, status: "active", at: days(8) }],
   carrier_exceptions: [],
@@ -317,7 +322,18 @@ const ORD_1007: Fixture = {
   created: days(10),
   notes: null,
   payments: [
-    { id: "PAY-2008", gateway_ref: "ch_1007A", status: "captured", amount_cents: 20_000, method: "card", at: days(10) },
+    // captured $200.00, of which $50.00 was already refunded as an unrelated
+    // goodwill adjustment -> $150.00 still refundable, comfortably above the
+    // $30.00 this scenario's carrier exception justifies.
+    {
+      id: "PAY-2008",
+      gateway_ref: "ch_1007A",
+      status: "captured",
+      amount_cents: 20_000,
+      refunded_cents: 5_000,
+      method: "card",
+      at: days(10),
+    },
   ],
   holds: [{ id: "HOLD-3007", sku: "SKU-0009", qty: 2, status: "consumed", at: days(10) }],
   carrier_exceptions: [

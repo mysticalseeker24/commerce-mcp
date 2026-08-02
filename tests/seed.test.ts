@@ -111,15 +111,36 @@ describe("invariant: event histories are ordered and start with order_created", 
 
 /* Invariant 2 */
 describe("invariant: refunds never exceed captures", () => {
-  it("no payment carries a refunded amount above what was captured", () => {
-    // Every seeded refund is a whole-payment refund, so the arithmetic check is
-    // that no refunded/refund_initiated payment has a negative or zero amount.
+  it("no payment has refunded_cents above amount_cents", () => {
+    // The schema CHECK enforces this; the test proves the seed does not rely on
+    // being lucky, and would catch a seed that silently violated it.
     const bad = db
       .prepare(
-        "SELECT id, status, amount_cents FROM payments WHERE status IN ('refunded','refund_initiated') AND amount_cents <= 0",
+        "SELECT id, amount_cents, refunded_cents FROM payments WHERE refunded_cents > amount_cents OR refunded_cents < 0",
       )
       .all();
     expect(bad).toEqual([]);
+  });
+
+  it("a fully refunded payment has refunded_cents equal to its amount", () => {
+    const bad = db
+      .prepare(
+        "SELECT id FROM payments WHERE status = 'refunded' AND refunded_cents <> amount_cents",
+      )
+      .all();
+    expect(bad).toEqual([]);
+  });
+
+  it("an in-flight refund still counts against refundable (ORD-1003)", () => {
+    const payment = q.getPaymentsForOrder("ORD-1003")[0];
+    expect(payment?.status).toBe("refund_initiated");
+    expect(payment?.refunded_cents).toBe(8_950);
+    expect((payment?.amount_cents ?? 0) - (payment?.refunded_cents ?? 0)).toBe(0);
+  });
+
+  it("payments with nothing refunded default to zero", () => {
+    const payment = q.getPaymentsForOrder("ORD-1001")[0];
+    expect(payment?.refunded_cents).toBe(0);
   });
 });
 
@@ -312,12 +333,15 @@ describe("invariant: ORD-1007 satisfies all six checks", () => {
     expect(priorRefund?.detail).toContain("unrelated to any return");
   });
 
-  it("captured $200.00 leaves enough refundable for a $30.00 refund", () => {
+  it("captured $200.00 less the prior $50.00 leaves $150.00 refundable", () => {
     const payment = q.getPaymentsForOrder("ORD-1007")[0];
     expect(payment?.status).toBe("captured");
     expect(payment?.amount_cents).toBe(20_000);
-    // captured 20000 − prior refund 5000 = 15000 refundable ≥ 3000 requested
-    expect(20_000 - 5_000).toBeGreaterThanOrEqual(3_000);
+    expect(payment?.refunded_cents).toBe(5_000);
+
+    const refundable = (payment?.amount_cents ?? 0) - (payment?.refunded_cents ?? 0);
+    expect(refundable).toBe(15_000);
+    expect(refundable).toBeGreaterThanOrEqual(3_000); // the requested refund fits
   });
 });
 

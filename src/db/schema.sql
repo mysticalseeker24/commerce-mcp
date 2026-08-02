@@ -42,11 +42,20 @@ CREATE TABLE payments (
   status       TEXT NOT NULL CHECK (status IN
                ('initiated','authorized','captured','failed','refund_initiated','refunded')),
   amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
+  -- Cents committed to refunds against this payment, settled OR in flight.
+  -- SPEC's refundable_cents is "captured minus already refunded/initiated", so an
+  -- initiated-but-unsettled refund counts here too (see ORD-1003).
+  -- A partial refund must be representable: the product's one executable action
+  -- refunds $30.00 against a $200.00 capture, and a status flip alone would imply
+  -- the whole $200.00 came back.
+  refunded_cents INTEGER NOT NULL DEFAULT 0
+                 CHECK (refunded_cents >= 0 AND refunded_cents <= amount_cents),
   method       TEXT NOT NULL,            -- card | ach | paypal | wallet
   created_at   TEXT NOT NULL
 );
 -- Processor state is READ-ONLY to this product. Nothing here is ever mutated by a
--- tool except the one eligible-refund branch of execute_resolution.
+-- tool except the one eligible-refund branch of execute_resolution, which
+-- increments refunded_cents rather than overwriting status.
 
 CREATE TABLE carrier_exceptions (
   id          TEXT PRIMARY KEY,          -- CE-001

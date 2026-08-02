@@ -276,7 +276,52 @@ reasoning goes in writing.
 
 ---
 
-## Entry 9 — Verification evidence
+## Entry 9 — A latent correctness bug found by implementing, not by testing
+
+**Phase:** 2, first hour · **Third escalate-then-adjudicate instance**
+
+Writing `refundable_cents` for `get_order_timeline` surfaced something the spec, the
+fixtures, and 39 passing tests had all missed: **the schema could not represent a
+partial refund.**
+
+`payments` modelled refunds as a status flip, `captured → refunded`. One row, one
+status, one amount. So:
+
+- ORD-1007's prior $50.00 goodwill adjustment existed only as an `order_events` row.
+  `refunded_total_cents` computed to $0, and the $30.00 discrepancy the entire
+  scenario turns on did not arise from the data at all.
+- Worse, and generally: executing ORD-1007's $30.00 refund would set
+  `PAY-2008.status = 'refunded'` on a **$200.00** capture — asserting the whole
+  $200.00 came back. The product's one executable action is a partial refund, and
+  the data model could not express one.
+
+The second point is what made this worth stopping for. The first is a fixture
+inconvenience; the second is a money bug that would have shipped, passed every test
+written so far, and been visible only to someone reading the payment row afterwards.
+
+**Adjudicated:** add `payments.refunded_cents INTEGER NOT NULL DEFAULT 0` with
+`CHECK (refunded_cents >= 0 AND refunded_cents <= amount_cents)`.
+`refundable_cents = amount_cents − refunded_cents`. Execution *increments* it rather
+than overwriting status. Semantics fixed deliberately: it counts refunds settled
+**or in flight**, matching SPEC's "captured minus already refunded/initiated" — which
+is why ORD-1003's never-settled $89.50 leaves $0 refundable rather than looking
+available to refund twice.
+
+Two smaller notes worth keeping:
+
+- I proposed this as a fixture change and **asked before touching approved
+  fixtures**, per the hard constraint. The alternatives considered — a second
+  `payments` row denoting the refund, or a fully normalised `refunds` table — are
+  recorded in the decision; the column won because it is the smallest change that
+  makes the failure impossible rather than merely detected.
+- The change immediately caused a real failure: I dropped `payment.method` from the
+  8-column INSERT, and `beforeAll` threw. `better-sqlite3`'s `.run()` is variadic, so
+  **typecheck could not catch it** — the test suite did, by failing to build a
+  database at all. A reminder about where each guard's coverage actually ends.
+
+---
+
+## Entry 10 — Verification evidence
 
 ### Phase 0 — the toolchain gate, and why it was worth running
 
@@ -318,11 +363,11 @@ runs on any given runtime.
 *(Later phases: seed hand-review notes, test-first commit hash, Tier-3 transcript
 summary, tool-description iterations)*
 
-## Entry 10 — Rejected AI suggestions
+## Entry 11 — Rejected AI suggestions
 
 *(the first substantive one gets recorded here; candidates expected in Phase 1 seed
 generation and Phase 4 money math)*
 
-## Entry 11 — Remaining risks and next steps
+## Entry 12 — Remaining risks and next steps
 
 *(feeds the README section of the same name)*

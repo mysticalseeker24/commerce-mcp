@@ -158,9 +158,10 @@ z.object({
 ```
 
 **Output:** array of payment objects (shape as in timeline) plus
-`refundable_cents` per captured payment (captured − already refunded/initiated)
-— this feeds directly into refund proposals and prevents the agent inventing
-refund amounts.
+`refundable_cents` per captured payment, computed as
+`amount_cents − refunded_cents` where `refunded_cents` counts refunds already
+settled **or in flight** — this feeds directly into refund proposals and prevents
+the agent inventing refund amounts.
 
 ---
 

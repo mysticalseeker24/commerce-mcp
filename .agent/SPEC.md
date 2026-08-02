@@ -153,11 +153,19 @@ CREATE TABLE payments (
   status       TEXT NOT NULL CHECK (status IN
                ('initiated','authorized','captured','failed','refund_initiated','refunded')),
   amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
+  refunded_cents INTEGER NOT NULL DEFAULT 0   -- settled OR in flight
+                 CHECK (refunded_cents >= 0 AND refunded_cents <= amount_cents),
   method       TEXT NOT NULL,            -- card | ach | paypal | wallet
   created_at   TEXT NOT NULL
 );
 -- Processor state is READ-ONLY to this product. Nothing here is ever mutated by a
--- tool except the one eligible-refund branch of execute_resolution.
+-- tool except the one eligible-refund branch of execute_resolution, which
+-- INCREMENTS refunded_cents rather than overwriting status.
+--
+-- refunded_cents exists because a status flip cannot express a partial refund, and
+-- the product's single executable action IS a partial refund ($30.00 against a
+-- $200.00 capture on ORD-1007). Without it, refundable_cents reads $200.00 and
+-- executing would imply the whole capture came back. See WORKLOG entry 9.
 
 CREATE TABLE carrier_exceptions (
   id          TEXT PRIMARY KEY,          -- CE-001

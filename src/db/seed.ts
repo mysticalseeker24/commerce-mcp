@@ -158,7 +158,7 @@ function seed(db: Db): void {
     "INSERT INTO orders (id, customer_id, status, total_cents, created_at, notes) VALUES (?, ?, ?, ?, ?, ?)",
   );
   const insertPayment = db.prepare(
-    "INSERT INTO payments (id, order_id, gateway_ref, status, amount_cents, method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO payments (id, order_id, gateway_ref, status, amount_cents, refunded_cents, method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const insertHold = db.prepare(
     "INSERT INTO inventory_holds (id, order_id, sku, qty, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -217,6 +217,7 @@ function seed(db: Db): void {
           payment.gateway_ref,
           payment.status,
           payment.amount_cents,
+          payment.refunded_cents ?? 0,
           payment.method,
           at(payment.at, t0),
         );
@@ -273,8 +274,10 @@ function seed(db: Db): void {
         : status === "pending" || status === "confirmed" ? "active"
         : "consumed";
 
+      // A clean cancellation refunds in full; everything else has nothing refunded.
+      const refundedCents = paymentStatus === "refunded" ? totalCents : 0;
       insertPayment.run(
-        paymentId, orderId, `ch_${orderId.slice(4)}A`, paymentStatus, totalCents, method, createdAt,
+        paymentId, orderId, `ch_${orderId.slice(4)}A`, paymentStatus, totalCents, refundedCents, method, createdAt,
       );
       insertHold.run(holdId, orderId, sku, qty, holdStatus, createdAt);
       if (holdStatus === "active") bumpReserved.run(qty, sku);

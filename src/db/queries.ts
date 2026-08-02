@@ -43,6 +43,8 @@ export interface PaymentRow {
   gateway_ref: string;
   status: string;
   amount_cents: number;
+  /** Cents committed to refunds, settled or in flight. refundable = amount - this. */
+  refunded_cents: number;
   method: string;
   created_at: string;
 }

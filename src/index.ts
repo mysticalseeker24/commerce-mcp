@@ -43,11 +43,22 @@ export function redactPath(url: string): string {
 }
 
 function unauthorized(res: Response): void {
-  res.status(401).json({
-    error_code: "unauthorized",
-    message: "Missing or invalid bearer token.",
-    hint: "Set an Authorization: Bearer <token> header on the request.",
-  });
+  // RFC 6750 §3: a 401 from a bearer-protected resource SHOULD say so. Omitting it
+  // is not merely untidy — a client that finds no challenge has to guess, and
+  // claude.ai guesses OAuth: it attempts discovery, finds no authorization-server
+  // metadata, and fails with "Couldn't register with the sign-in service".
+  //
+  // Deliberately NO `resource_metadata` parameter. That is what would advertise an
+  // OAuth authorization server, and this server has none — it authenticates a
+  // single shared token. The challenge says "send a bearer token", nothing more.
+  res
+    .status(401)
+    .set("WWW-Authenticate", 'Bearer realm="commerce-ops-mcp"')
+    .json({
+      error_code: "unauthorized",
+      message: "Missing or invalid bearer token.",
+      hint: "Set an Authorization: Bearer <token> header on the request.",
+    });
 }
 
 export function createApp(deps: AppDeps): Express {

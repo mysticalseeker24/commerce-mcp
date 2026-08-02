@@ -54,20 +54,36 @@ claude mcp add --transport http commerce-ops https://<your-app>.up.railway.app/m
 claude   # then /mcp to confirm it shows "connected"
 ```
 
-**claude.ai — try header auth first.** Settings → Connectors → Add custom connector →
-URL `https://<your-app>.up.railway.app/mcp`, and enter the bearer token as a request
-header if your organization has that option.
+**claude.ai — use the tokenized URL.** Settings → Connectors → Add custom connector,
+with the token as a path segment and **no** auth configured in the dialog:
 
+```
+https://<your-app>.up.railway.app/mcp/<token>
+```
+
+Requires `ALLOW_URL_TOKEN=true` on the service.
+
+*Why not header auth here?* Tested, and it does not work on a standard account.
 Claude's [connector auth reference](https://claude.com/docs/connectors/building/authentication)
-lists `static_headers` — a fixed API key or bearer token entered by an organization
-administrator — as **Beta**. If it isn't available on the account:
+lists `static_headers` — a fixed bearer token entered by an organization
+administrator — as **Beta**. Without it, claude.ai has no way to attach the header,
+hits our `401`, and falls back to OAuth discovery. The observed failure is:
 
-1. Set `ALLOW_URL_TOKEN=true` on Railway and redeploy.
-2. Use `https://<your-app>.up.railway.app/mcp/<token>` as the connector URL.
+> Couldn't register with Commerce MCP's sign-in service. You can try again, or add
+> an OAuth Client ID in the connector settings.
 
-That fallback is off by default and is a documented tradeoff, not an oversight —
-credentials in URLs reach proxy logs and browser history. See CONVENTIONS.md A2.5.
-The header path stays the recommendation.
+That is Dynamic Client Registration failing against a server that has no OAuth
+authorization server, which is expected — this server authenticates one shared
+token. The tokenized URL sidesteps the whole flow: the request authenticates on its
+first hop, so no `401` is ever returned and no auth negotiation begins.
+
+If a failed connector is already saved, **delete it before retrying** — it will keep
+attempting OAuth.
+
+The header path remains the recommendation *where it is available* (Claude Code,
+and orgs with `static_headers` enabled). The URL fallback is a documented tradeoff,
+not an oversight: credentials in URLs reach proxy logs and browser history. See
+CONVENTIONS.md A2.5.
 
 ## 6. Confirm end to end
 

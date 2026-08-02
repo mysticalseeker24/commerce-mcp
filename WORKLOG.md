@@ -447,7 +447,40 @@ returns 401 rather than 404. That is the intended *submission* configuration
 claude.ai's header auth against an unmounted fallback no longer runs cleanly. The
 header path remains the recommended one in the submission email.
 
-*(Still to come: Tier-3 agent transcript summary, tool-description iterations.)*
+### The auth hedge paid off — empirical result
+
+[Entry 3](#entry-3--the-auth-finding-a-deployment-failure-that-didnt-happen) built a
+second auth path in Phase 0 on the strength of a documentation table saying
+`static_headers` was Beta. Connecting claude.ai settled the question:
+
+> **Couldn't register with Commerce MCP's sign-in service.** You can try again, or
+> add an OAuth Client ID in the connector settings.
+
+Header auth was **not available** on a standard account. With no way to attach the
+header, claude.ai hit our `401`, fell back to OAuth discovery, found no
+authorization server, and failed at Dynamic Client Registration.
+
+Two things worth separating here, because they are different failures:
+
+1. **The predicted one.** Header-only auth would have left the server
+   unconnectable from claude.ai — exactly the failure Phase 0 hedged against, and
+   the reason the tokenized URL path exists. Switching the connector to
+   `/mcp/<token>` connects immediately; the request authenticates on its first hop,
+   so no `401` is returned and no auth negotiation ever begins. Verified against
+   the deployed server: a bare `initialize` on that path returns a full handshake.
+
+2. **One I had not predicted, and it was mine.** Our `401` carried no
+   `WWW-Authenticate` header. RFC 6750 §3 says a bearer-protected resource *should*
+   send one, and the omission is not cosmetic: a client with no challenge to read
+   has to guess, and claude.ai guesses OAuth. Fixed — the `401` now returns
+   `WWW-Authenticate: Bearer realm="commerce-ops-mcp"`, deliberately **without** a
+   `resource_metadata` parameter, since that parameter is what advertises an OAuth
+   authorization server and this server has none.
+
+The honest scorecard: the hedge was correct and saved the demo, but the underlying
+protocol defect was in our server, not only in the client's rollout state. Both are
+recorded because the second one is the part I would have missed if the first had
+simply worked.
 
 ## Entry 12 — Rejected AI suggestions
 

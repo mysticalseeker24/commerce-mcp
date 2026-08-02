@@ -20,14 +20,18 @@ gated write path is what I'm building now.
 Two ways to connect, header auth preferred:
 
 1. **Claude Code** — `claude mcp add --transport http commerce-ops https://commerce-mcp.up.railway.app/mcp --header "Authorization: Bearer <token>"`
-2. **claude.ai** — add a custom connector pointing at
-   `https://commerce-mcp.up.railway.app/mcp` with the bearer token as a request
-   header. Claude's `static_headers` auth is currently Beta and gated behind an
-   org-admin flow, so if it isn't available on your account, the same URL with the
-   token as a path segment works instead:
-   `https://commerce-mcp.up.railway.app/mcp/<token>`. That fallback is a documented
-   tradeoff rather than an oversight — credentials in URLs reach proxy logs — and
-   it's covered in the repo's known limitations.
+2. **claude.ai** — add a custom connector with this URL and leave the auth fields
+   empty:
+   `https://commerce-mcp.up.railway.app/mcp/897e29b4ae8abde9b277477d3d8a9dc2344d5cef2e0990efe886ad52e7ab5d5c`
+
+   Header auth is the better channel and works in Claude Code, but claude.ai's
+   `static_headers` support is still Beta and gated behind an org-admin flow. On a
+   standard account claude.ai can't attach the header, so it falls back to OAuth
+   discovery and fails with "couldn't register with the sign-in service" — there's
+   no OAuth server here, just one shared token. The tokenized URL authenticates on
+   the first hop, so that negotiation never starts. It's a documented tradeoff
+   rather than an oversight (credentials in URLs reach proxy logs), and it's in the
+   repo's known-limitations list.
 
 Sanity check without any client:
 

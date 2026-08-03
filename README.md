@@ -8,7 +8,7 @@ ticket to engineering.
 
 ```
                                         typecheck  clean
-                                        tests      189 passing
+                                        tests      212 passing
                                         tools      5 read · 2 write
                                         data       250 synthetic orders
 ```
@@ -90,7 +90,7 @@ SQLite — dropped and reseeded on every boot
 | `search_orders` | Find orders by email, ID, status, date or amount. Keyset-paginated. Each row carries `anomaly_hints` and a `refund_eligible` flag |
 | `get_order_timeline` | The primary investigation tool. Merges four systems into one chronological timeline, plus diagnostics and a live refund-eligibility read-out |
 | `get_payment_details` | Gateway-side view, with `refundable_cents` per payment so the agent never invents a refund amount |
-| `check_inventory` | Stock and holds. Each hold reports its order's status, so an orphaned hold is visible in one response |
+| `check_inventory` | Stock and holds. Each hold reports its order's status, so an orphaned hold is visible in one response. Active-only by default, bounded at 50 |
 | `get_audit_log` | What has already been done, with before/after state |
 
 ### Write — gated
@@ -105,6 +105,12 @@ Two properties worth calling out:
 **Diagnostics are computed, not narrated.** `discrepancy_cents`, `refundable_cents`,
 and `anomaly_hints` are arithmetic the tool performs. The agent does judgment; the
 server does maths.
+
+**The escalation kind you confirm is the one that gets filed.** Classification
+happens once, in `classifyEscalation()`, and is persisted on the proposal;
+`execute_resolution` reads it rather than re-deriving. That guarantee was not free —
+the rule briefly existed twice and the copies disagreed on orders that were both a
+duplicate charge and an ineligible refund. See WORKLOG entry 13.
 
 **An ineligible refund redirects rather than refusing.** Requesting a refund that
 fails policy returns an *executable escalation* naming the failed check — not an
@@ -200,7 +206,7 @@ npm run dev
 |---|---|
 | `npm run dev` | Watch mode with pretty logs |
 | `npm run build` | Compile, and copy `schema.sql` into `dist/` |
-| `npm test` | 189 tests |
+| `npm test` | 212 tests |
 | `npm run typecheck` | Covers `tests/` too |
 | `npm run smoke -- <url> <token>` | 21 end-to-end checks against a running server |
 
@@ -213,10 +219,10 @@ tests/seed.test.ts        42   fixture invariants; each of the 11 scenarios veri
 tests/policy.test.ts      19   each of the six checks failing in isolation, and every boundary
 tests/timeline.test.ts    28   diagnostics flags, arithmetic, the untrusted-note wrapper
 tests/search.test.ts      39   full pagination sweep, anomaly hints, error contracts
-tests/resolution.test.ts  37   the safety core — written and watched failing first
-tests/http.test.ts        24   real SDK client over real HTTP
+tests/resolution.test.ts  50   the safety core — written and watched failing first
+tests/http.test.ts        29   real SDK client over real HTTP
                          ───
-                         189
+                         212
 ```
 
 Tests share the production `createDb()`, so they verify the real fixtures rather than

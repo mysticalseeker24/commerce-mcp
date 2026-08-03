@@ -98,12 +98,46 @@ function orderIsHealthy(queries: Queries, order: OrderRow): boolean {
 }
 
 /**
- * Duplicate charges go to human_review, everything else to manager_approval —
- * mirroring the client's own wording.
+ * THE single place either escalation kind is decided.
+ *
+ * This existed twice and the two copies disagreed: propose hardcoded
+ * `manager_approval` on the ineligible-refund redirect while execute re-derived
+ * from the payment rows, so a refund request on ORD-1002 was confirmed as
+ * "manager approval" and *recorded* as `human_review`. The analyst confirmed one
+ * thing and a different thing was filed — which defeats the guarantee the
+ * propose→execute split exists to provide, and the two kinds route to different
+ * human queues.
+ *
+ * Precedence matters: ORD-1002 is simultaneously a duplicate-charge case and an
+ * ineligible refund. Duplicate charge wins, because the processor-adjacent nature
+ * of the case is what determines who should look at it.
+ *
+ * Scope note: "processor-adjacent" is deliberately narrow here — only a suspected
+ * duplicate charge. ORD-1003's stuck refund also touches the processor but SPEC
+ * §4.2 assigns it `manager_approval`, so widening this rule would contradict an
+ * approved fixture.
  */
-function escalationKindFor(queries: Queries, order: OrderRow): EscalationKind {
-  const captured = queries.getPaymentsForOrder(order.id).filter((p) => p.status === "captured");
-  return captured.length > 1 ? "human_review" : "manager_approval";
+export function classifyEscalation(
+  diagnostics: { flags: readonly string[] },
+  eligibility: EligibilityResult | null,
+): { kind: EscalationKind; reason: string } {
+  if (diagnostics.flags.includes("DOUBLE_CHARGE_SUSPECTED")) {
+    return { kind: "human_review", reason: "duplicate_charge_suspected" };
+  }
+  if (eligibility !== null && !eligibility.eligible) {
+    return { kind: "manager_approval", reason: "refund_ineligible" };
+  }
+  return { kind: "manager_approval", reason: "no_automated_remedy" };
+}
+
+function diagnosticsFor(queries: Queries, order: OrderRow): ReturnType<typeof computeDiagnostics> {
+  return computeDiagnostics({
+    order,
+    payments: queries.getPaymentsForOrder(order.id),
+    holds: queries.getHoldsForOrder(order.id),
+    events: queries.getEventsForOrder(order.id),
+    carrierExceptions: queries.getCarrierExceptionsForOrder(order.id),
+  });
 }
 
 /**
@@ -221,7 +255,7 @@ export function proposeResolution(
 
   /* ---- escalate ---------------------------------------------------------- */
   if (args.action === "escalate") {
-    const kind = escalationKindFor(queries, order);
+    const { kind, reason } = classifyEscalation(diagnosticsFor(queries, order), null);
     queries.insertProposal({
       id: proposalId,
       order_id: order.id,
@@ -229,6 +263,8 @@ export function proposeResolution(
       target_id: args.target_id,
       amount_cents: null,
       action_key: null,
+      escalation_kind: kind,
+      escalation_reason: reason,
       reasoning: args.reasoning,
       order_state_snapshot: snapshot,
       status: "pending",
@@ -281,6 +317,11 @@ export function proposeResolution(
   // executable escalation. Refusing outright would leave the analyst with nothing
   // to do and push them back to the engineering ticket this product replaces.
   if (!eligibility.eligible) {
+    // Classified ONCE, here, and persisted. A duplicate-charge order redirects to
+    // human_review even though the trigger was an ineligible refund — which is
+    // exactly the case the two old copies disagreed on.
+    const { kind, reason } = classifyEscalation(diagnosticsFor(queries, order), eligibility);
+
     queries.insertProposal({
       id: proposalId,
       order_id: order.id,
@@ -288,6 +329,8 @@ export function proposeResolution(
       target_id: args.target_id,
       amount_cents: args.amount_cents,
       action_key: null,
+      escalation_kind: kind,
+      escalation_reason: reason,
       reasoning: args.reasoning,
       order_state_snapshot: snapshot,
       status: "pending",
@@ -298,9 +341,9 @@ export function proposeResolution(
       proposal_id: proposalId,
       status: "pending",
       action: "escalate",
-      escalation_kind: "manager_approval" satisfies EscalationKind,
+      escalation_kind: kind,
       eligibility,
-      plan: ineligiblePlan(order, args.amount_cents, eligibility),
+      plan: ineligiblePlan(order, args.amount_cents, eligibility, kind),
       expires_note:
         "Execute with execute_resolution. Proposal is invalidated if order state changes first.",
       as_of: createdAt,
@@ -314,6 +357,8 @@ export function proposeResolution(
     target_id: args.target_id,
     amount_cents: args.amount_cents,
     action_key: context.actionKey,
+    escalation_kind: null,
+    escalation_reason: null,
     reasoning: args.reasoning,
     order_state_snapshot: snapshot,
     status: "pending",
@@ -358,11 +403,15 @@ function ineligiblePlan(
   order: OrderRow,
   amountCents: number,
   eligibility: EligibilityResult,
+  kind: EscalationKind,
 ): string {
   const failed = eligibility.checks.find((c) => !c.passed);
+  // The plan must name the kind that will actually be filed. It previously said
+  // "manager-approval" unconditionally while execute could record human_review.
+  const label = kind === "human_review" ? "human-review" : "manager-approval";
   return (
     `Cannot refund ${formatCents(amountCents)} on order ${order.id}: ${failed?.evidence ?? "policy check failed"}. ` +
-    `Executing this proposal records a manager-approval escalation with the full eligibility ` +
+    `Executing this proposal records a ${label} escalation with the full eligibility ` +
     `evidence instead. No payment state will change.`
   );
 }
@@ -563,16 +612,23 @@ export function executeResolution(
   }
 
   /* ---- escalate: files evidence, mutates nothing else --------------------- */
-  const kind = escalationKindFor(queries, order);
   const eligibilityForPacket =
     proposal.amount_cents === null ? undefined : eligibilityAtExecute(queries, order, proposal.amount_cents);
 
-  const reason =
-    kind === "human_review"
-      ? "duplicate_charge_suspected"
-      : proposal.amount_cents === null
-        ? "no_automated_remedy"
-        : "refund_ineligible";
+  /*
+   * Read the classification the analyst CONFIRMED rather than re-deriving it.
+   *
+   * Re-deriving is what let propose and execute disagree: a refund request on
+   * ORD-1002 was confirmed as manager-approval and filed as human_review. Reading
+   * the stored value makes the filed escalation provably the one shown in the plan,
+   * and brings classification under the staleness guard for free — if the order
+   * changed enough to alter its classification, the snapshot check already refused.
+   *
+   * The fallback covers only proposals written before these columns existed.
+   */
+  const stored = classifyEscalation(diagnosticsFor(queries, order), eligibilityForPacket ?? null);
+  const kind = (proposal.escalation_kind ?? stored.kind) as EscalationKind;
+  const reason = proposal.escalation_reason ?? stored.reason;
 
   const escalationId = `ESC-${randomUUID()}`;
   const beforeState = currentSerialized;

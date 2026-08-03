@@ -437,6 +437,118 @@ describe("full round trip over HTTP: timeline → propose → execute", () => {
   });
 });
 
+describe("escalation kind agrees across propose and execute, over the wire", () => {
+  it("ORD-1002 is human_review in the plan and in the recorded escalation", async () => {
+    // The reproduction from live review: confirmed as manager-approval, filed as
+    // human_review. Asserted here at the layer the analyst actually sees.
+    const client = await connectClient();
+    try {
+      const proposal = JSON.parse(
+        textOf(
+          await client.callTool({
+            name: "propose_resolution",
+            arguments: {
+              order_id: "ORD-1002",
+              action: "refund",
+              target_id: "PAY-2003",
+              amount_cents: 14_000,
+              reasoning: "Customer reports a duplicate charge; attempting a refund of the second capture.",
+            },
+          }),
+        ),
+      ) as { proposal_id: string; action: string; escalation_kind: string; plan: string };
+
+      expect(proposal.action).toBe("escalate");
+      expect(proposal.escalation_kind).toBe("human_review");
+      expect(proposal.plan).toContain("human-review");
+
+      const executed = JSON.parse(
+        textOf(
+          await client.callTool({
+            name: "execute_resolution",
+            arguments: { proposal_id: proposal.proposal_id, confirmed_by: "analyst@example.com" },
+          }),
+        ),
+      ) as { escalation_kind: string };
+
+      expect(executed.escalation_kind).toBe(proposal.escalation_kind);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("check_inventory is bounded like every other list-returning tool", () => {
+  it("hides consumed holds by default and says how many it hid", async () => {
+    const client = await connectClient();
+    try {
+      const body = JSON.parse(
+        textOf(await client.callTool({ name: "check_inventory", arguments: { sku: "SKU-0007" } })),
+      ) as {
+        holds: Array<{ status: string }>;
+        holds_total: number;
+        holds_omitted: number;
+        include_consumed: boolean;
+        note?: string;
+      };
+
+      expect(body.include_consumed).toBe(false);
+      expect(body.holds.every((h) => h.status === "active")).toBe(true);
+      expect(body.holds_omitted).toBeGreaterThan(0);
+      expect(body.note).toContain("include_consumed");
+      expect(body.holds.length).toBeLessThan(body.holds_total);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("returns the full history when asked", async () => {
+    const client = await connectClient();
+    try {
+      const body = JSON.parse(
+        textOf(
+          await client.callTool({
+            name: "check_inventory",
+            arguments: { sku: "SKU-0007", include_consumed: true },
+          }),
+        ),
+      ) as { holds: Array<{ status: string }>; holds_total: number; holds_omitted: number };
+
+      expect(body.holds.length).toBe(body.holds_total);
+      expect(body.holds_omitted).toBe(0);
+      // Active first, because those are the ones that explain a discrepancy.
+      expect(body.holds[0]?.status).toBe("active");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("still surfaces ORD-1004's orphaned hold, which is the point of the tool", async () => {
+    const client = await connectClient();
+    try {
+      const body = JSON.parse(
+        textOf(await client.callTool({ name: "check_inventory", arguments: { sku: "SKU-0007" } })),
+      ) as { holds: Array<{ hold_id: string; anomaly: string | null }> };
+      const orphan = body.holds.find((h) => h.hold_id === "HOLD-3004");
+      expect(orphan?.anomaly).toContain("never ship");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("states the default in the advertised description", async () => {
+    const client = await connectClient();
+    try {
+      const { tools } = await client.listTools();
+      const desc = tools.find((t) => t.name === "check_inventory")?.description ?? "";
+      expect(desc).toContain("active holds by default");
+      expect(desc).toContain("include_consumed");
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 describe("the untrusted-note wrapper survives serialization over the wire", () => {
   it("ORD-1008's note reaches the client only inside the wrapper", async () => {
     const client = await connectClient();

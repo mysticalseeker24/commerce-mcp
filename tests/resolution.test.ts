@@ -535,6 +535,151 @@ describe("escalate records evidence and changes nothing else", () => {
 });
 
 /* ==========================================================================
+ * The confirm-what-you-see guarantee
+ * ========================================================================== */
+
+describe("the escalation kind confirmed is the escalation kind recorded", () => {
+  /*
+   * Regression. propose hardcoded `manager_approval` on the ineligible-refund
+   * redirect while execute re-derived from the payment rows, so a refund request on
+   * ORD-1002 was confirmed as "manager approval" and filed as `human_review`.
+   *
+   * That is not cosmetic: the analyst confirms one thing and a different thing is
+   * recorded, which defeats the entire point of the propose→execute split, and the
+   * two kinds route to different human queues.
+   */
+  const kindOfEscalationRow = (): string =>
+    (db.prepare<[], { kind: string }>("SELECT kind FROM escalations").get() as { kind: string }).kind;
+
+  const ESCALATE_CASES = [
+    ["ORD-1001", "ORD-1001"],
+    ["ORD-1002", "ORD-1002"],
+    ["ORD-1003", "ORD-1003"],
+    ["ORD-1004", "HOLD-3004"],
+    ["ORD-1005", "ORD-1005"],
+    ["ORD-1006", "ORD-1006"],
+    ["ORD-1009", "ORD-1009"],
+    ["ORD-1010", "ORD-1010"],
+    ["ORD-1011", "ORD-1011"],
+  ] as const;
+
+  it.each(ESCALATE_CASES)("%s: proposed kind == recorded kind (escalate)", (orderId, target) => {
+    const p = propose({
+      order_id: orderId,
+      action: "escalate",
+      target_id: target,
+      reasoning: "Requires human judgment; recording evidence rather than acting automatically.",
+    });
+    execute(p.proposal_id);
+    expect(kindOfEscalationRow()).toBe(p.escalation_kind);
+  });
+
+  const REDIRECT_CASES = [
+    ["ORD-1002", "PAY-2003", 14_000],
+    // 18000 = the real $180 gap. Above the schema max, so this reaches the handler
+    // only on a direct call — which is the point: the schema is not the boundary.
+    ["ORD-1009", "PAY-2010", 18_000],
+    ["ORD-1010", "PAY-2011", 4_000],
+    ["ORD-1011", "PAY-2012", 6_000],
+  ] as const;
+
+  it.each(REDIRECT_CASES)(
+    "%s: proposed kind == recorded kind (ineligible refund redirect)",
+    (orderId, target, amount) => {
+      const p = propose({
+        order_id: orderId,
+        action: "refund",
+        target_id: target,
+        amount_cents: amount,
+        reasoning: "Requesting a refund; expecting the policy to decide whether it is permitted.",
+      });
+      expect(p.action).toBe("escalate");
+      execute(p.proposal_id);
+      expect(kindOfEscalationRow()).toBe(p.escalation_kind);
+    },
+  );
+
+  it("ORD-1002 is human_review at BOTH stages, even via a refund request", () => {
+    // The exact reproduction. Duplicate charge wins over refund-ineligible.
+    const p = propose({
+      order_id: "ORD-1002",
+      action: "refund",
+      target_id: "PAY-2003",
+      amount_cents: 14_000,
+      reasoning: "Customer reports a duplicate charge; attempting a refund of the second capture.",
+    });
+    expect(p.escalation_kind).toBe("human_review");
+    expect(p.plan).toContain("human-review");
+
+    const r = execute(p.proposal_id);
+    expect(r.escalation_kind).toBe("human_review");
+
+    const row = db
+      .prepare<[], { kind: string; reason: string }>("SELECT kind, reason FROM escalations")
+      .get();
+    expect(row?.kind).toBe("human_review");
+    expect(row?.reason).toBe("duplicate_charge_suspected");
+  });
+
+  it("ORD-1009 is manager_approval at both stages", () => {
+    const p = propose({
+      order_id: "ORD-1009",
+      action: "refund",
+      target_id: "PAY-2010",
+      amount_cents: 18_000,
+      reasoning: "Verified damage claim exceeds the cap; expecting a manager-approval escalation.",
+    });
+    expect(p.escalation_kind).toBe("manager_approval");
+    expect(p.plan).toContain("manager-approval");
+
+    expect(execute(p.proposal_id).escalation_kind).toBe("manager_approval");
+    expect(kindOfEscalationRow()).toBe("manager_approval");
+  });
+
+  it("execute reads the stored classification rather than re-deriving it", () => {
+    // Persisted on the proposal, so the filed escalation is provably the confirmed
+    // one — and classification comes under the staleness guard for free.
+    const p = propose({
+      order_id: "ORD-1002",
+      action: "escalate",
+      target_id: "ORD-1002",
+      reasoning: "Duplicate capture requires a human decision; no automated remedy is permitted.",
+    });
+    const stored = db
+      .prepare<[string], { escalation_kind: string; escalation_reason: string }>(
+        "SELECT escalation_kind, escalation_reason FROM proposals WHERE id = ?",
+      )
+      .get(p.proposal_id);
+    expect(stored?.escalation_kind).toBe(p.escalation_kind);
+    expect(stored?.escalation_reason).toBe("duplicate_charge_suspected");
+  });
+});
+
+describe("action_key is deliberately null on escalate audit rows", () => {
+  it("an escalation writes no action key — no refund key exists to write", () => {
+    // Confirming this is intentional rather than a fallthrough: the partial unique
+    // index covers successful refunds, and reserving a key for an escalation would
+    // be a lie that could block a later legitimate refund.
+    execute(
+      propose({
+        order_id: "ORD-1006",
+        action: "escalate",
+        target_id: "ORD-1006",
+        reasoning: "Packed four days ago with no fulfillment events; no automated remedy exists.",
+      }).proposal_id,
+    );
+    const row = auditRows()[0];
+    expect(row?.["action"]).toBe("escalate");
+    expect(row?.["action_key"]).toBeNull();
+  });
+
+  it("and an eligible refund does write one", () => {
+    execute(propose(REFUND_1007).proposal_id);
+    expect(auditRows()[0]?.["action_key"]).toBe(buildActionKey("ORD-1007", "CE-004"));
+  });
+});
+
+/* ==========================================================================
  * Structural: processor state moves only on the eligible-refund branch
  * ========================================================================== */
 

@@ -170,6 +170,8 @@ export interface ProposalRow {
   target_id: string;
   amount_cents: number | null;
   action_key: string | null;
+  escalation_kind: string | null;
+  escalation_reason: string | null;
   reasoning: string;
   order_state_snapshot: string;
   status: string;
@@ -266,9 +268,10 @@ export function createQueries(db: Db): Queries {
   /* ---- write path -------------------------------------------------------- */
   const insertProposalStmt = db.prepare(
     `INSERT INTO proposals
-       (id, order_id, action, target_id, amount_cents, action_key, reasoning,
+       (id, order_id, action, target_id, amount_cents, action_key,
+        escalation_kind, escalation_reason, reasoning,
         order_state_snapshot, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectProposal = db.prepare<[string], ProposalRow>("SELECT * FROM proposals WHERE id = ?");
   // THE concurrency guard. Two callers, one winner — enforced by the WHERE clause,
@@ -334,7 +337,8 @@ export function createQueries(db: Db): Queries {
     insertProposal: (row) => {
       insertProposalStmt.run(
         row.id, row.order_id, row.action, row.target_id, row.amount_cents,
-        row.action_key, row.reasoning, row.order_state_snapshot, row.status, row.created_at,
+        row.action_key, row.escalation_kind, row.escalation_reason, row.reasoning,
+        row.order_state_snapshot, row.status, row.created_at,
       );
     },
     getProposal: (proposalId) => selectProposal.get(proposalId),

@@ -584,7 +584,66 @@ Worth noting *why the tests caught it*: they assert `discrepancy_cents === 3000`
 not of the implementation. A test written as "returnedValueCents parses the detail
 string" would have passed against the broken design.
 
-## Entry 13 — Remaining risks and next steps
+## Entry 13 — A live-review bug: propose and execute disagreed
+
+**Found by a reviewer driving the hosted server, not by the test suite.**
+
+Proposing a refund on ORD-1002 returned `escalation_kind: "manager_approval"` and a
+plan reading *"records a manager-approval escalation."* Executing that same proposal
+filed `human_review`.
+
+**Why it mattered more than it looked.** The analyst confirms one thing and a
+different thing is recorded — which is precisely the guarantee the propose→execute
+split exists to provide. The two kinds also route to different human queues, so the
+escalation lands with the wrong team. A cosmetic-looking mismatch was a correctness
+bug in the product's central safety claim.
+
+**Cause: the rule existed twice.** `propose_resolution` hardcoded `manager_approval`
+on the ineligible-refund redirect; `execute_resolution` re-derived from the payment
+rows and saw two captures. ORD-1002 is *simultaneously* a duplicate-charge case and
+an ineligible refund, so the two copies disagreed only on orders that were both — the
+narrow overlap no test happened to cover.
+
+**Fix, per the reviewer's direction, and the right way round.** Execute's answer was
+the correct one (duplicate charge should win over refund-ineligible), so propose was
+brought to match execute rather than the reverse:
+
+1. One `classifyEscalation()` decides both `kind` and `reason`. Nowhere else may.
+2. Propose calls it and **persists the result** on `proposals.escalation_kind` /
+   `escalation_reason`.
+3. Execute **reads the stored value** instead of re-deriving. The filed escalation is
+   now provably the confirmed one — and classification comes under the existing
+   staleness guard for free, since a state change large enough to alter the
+   classification already fails the snapshot check.
+4. The plan string names the kind that will actually be recorded.
+
+Thirteen new tests assert propose-kind equals recorded-kind across ORD-1001…1006 and
+1009…1011, for both the direct-escalate and redirect paths, plus the two specific
+cases called out in review.
+
+**Two smaller items from the same review.**
+
+*Confirmed, not changed:* `action_key` is null on escalate audit rows. That is
+deliberate — no refund key exists, and reserving one for an escalation would be a
+lie that could block a later legitimate refund via check 6. Now asserted explicitly
+rather than left as an apparent fallthrough.
+
+*Improved:* `check_inventory` was the only list-returning tool without a bound —
+SKU-0007 returned 13 holds, 10 consumed and irrelevant to availability. Added
+`include_consumed` (default false), a hard cap of 50, active-first ordering, and
+`holds_total`/`holds_omitted` so nothing is hidden silently. Unbounded tool output is
+a fair criticism of an MCP surface, and "every list-returning tool is bounded" is a
+cleaner property than one with an exception.
+
+**What this says about the test suite.** 189 tests passed while this bug was live.
+They covered each path in isolation; none compared the *two stages against each
+other*. The lesson is specific: for a two-stage confirmation gate, the property worth
+testing is agreement between the stages, not the correctness of each. That class of
+test now exists.
+
+---
+
+## Entry 14 — Remaining risks and next steps
 
 **Verification gap this build closed late.** Every suite except `http.test.ts` calls
 handlers directly. That is fast, and it is blind to schema validation, transport

@@ -212,7 +212,15 @@ z.object({
 // .refine: exactly one must be provided
 ```
 
-**Output:** `{ sku, product_name, total_stock, reserved, available, holds: [...] , as_of }`
+**Output:** `{ sku, product_name, total_stock, reserved, available, holds: [...],
+holds_returned, holds_total, holds_omitted, include_consumed, as_of }`
+
+**Bounded.** Only `active` holds are returned unless `include_consumed: true`, and no
+more than 50 in any case. Active holds sort first. SKU-0007 otherwise returns 13
+holds of which 10 are consumed and irrelevant to availability; this was the only
+list-returning tool without a bound, and "every list-returning tool is bounded" is a
+cleaner property than one carrying an exception. The response always reports
+`holds_total` and `holds_omitted`, so nothing is hidden silently.
 where `available = total_stock − reserved`, and each hold includes its order's
 current status — an `active` hold on a `cancelled` order is visibly anomalous
 in one response.

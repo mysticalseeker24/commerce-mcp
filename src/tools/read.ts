@@ -458,12 +458,23 @@ export function getPaymentDetails(
  * check_inventory
  * ========================================================================== */
 
+/** Hard ceiling on holds returned, whatever the filters say. */
+export const MAX_HOLDS_RETURNED = 50;
+
 const CheckInventoryInput = z.strictObject({
     sku: z.string().regex(/^SKU-\d+$/).optional(),
     order_id: z.string().regex(/^ORD-\d+$/).optional(),
+    include_consumed: z
+      .boolean()
+      .default(false)
+      .describe("Include consumed and released holds. Defaults to false — they do not affect availability"),
 });
 
-export type CheckInventoryArgs = z.infer<typeof CheckInventoryInput>;
+/**
+ * Input type, not output: `include_consumed` has a schema default, so callers
+ * (including tests) should not have to restate it. The default is applied below.
+ */
+export type CheckInventoryArgs = z.input<typeof CheckInventoryInput>;
 
 export function checkInventory(
   queries: Queries,
@@ -495,6 +506,39 @@ export function checkInventory(
     };
   };
 
+  /*
+   * Bound the output.
+   *
+   * SKU-0007 returned 13 holds, 10 of them consumed and irrelevant to availability.
+   * This was the only list-returning tool without a bound, and unbounded tool output
+   * is a fair criticism of an MCP surface — "every list-returning tool is bounded" is
+   * a cleaner property than one with an exception. Active holds sort first, because
+   * those are the ones that explain a stock discrepancy.
+   */
+  const includeConsumed = args.include_consumed ?? false;
+  const presentHolds = (holds: readonly HoldRow[]): Record<string, unknown> => {
+    const relevant = includeConsumed ? [...holds] : holds.filter((h) => h.status === "active");
+    const ordered = relevant.sort((a, b) => {
+      if (a.status === b.status) return a.id.localeCompare(b.id);
+      return a.status === "active" ? -1 : 1;
+    });
+    const page = ordered.slice(0, MAX_HOLDS_RETURNED);
+    return {
+      holds: page.map(holdView),
+      holds_returned: page.length,
+      holds_total: holds.length,
+      holds_omitted: holds.length - page.length,
+      include_consumed: includeConsumed,
+      ...(holds.length > page.length
+        ? {
+            note: includeConsumed
+              ? `Showing the first ${MAX_HOLDS_RETURNED} of ${holds.length} holds.`
+              : `${holds.length - page.length} consumed or released hold(s) hidden; they do not affect availability. Pass include_consumed: true to see them.`,
+          }
+        : {}),
+    };
+  };
+
   if (args.sku !== undefined) {
     const item = queries.getInventory(args.sku);
     if (item === undefined) {
@@ -504,14 +548,13 @@ export function checkInventory(
         "Check the SKU, or call check_inventory with an order_id to see the holds tied to that order.",
       );
     }
-    const holds = queries.getHoldsForSku(args.sku);
     return {
       sku: item.sku,
       product_name: item.product_name,
       total_stock: item.total_stock,
       reserved: item.reserved,
       available: item.total_stock - item.reserved,
-      holds: holds.map(holdView),
+      ...presentHolds(queries.getHoldsForSku(args.sku)),
       as_of: now(),
     };
   }
@@ -526,7 +569,7 @@ export function checkInventory(
   }
   return {
     order_id: orderId,
-    holds: queries.getHoldsForOrder(orderId).map(holdView),
+    ...presentHolds(queries.getHoldsForOrder(orderId)),
     as_of: now(),
   };
 }
@@ -651,7 +694,9 @@ export function registerReadTools(
       description:
         "Check stock levels and active holds for a SKU, or list all holds tied to an " +
         "order. Use when investigating stock discrepancies or orders that may be " +
-        "blocking inventory.",
+        "blocking inventory. Returns only active holds by default, since consumed and " +
+        "released holds do not affect availability — pass include_consumed: true for " +
+        "the full history.",
       inputSchema: CheckInventoryInput,
     },
     instrumented<CheckInventoryArgs, Record<string, unknown>>("check_inventory", options, (args) => {

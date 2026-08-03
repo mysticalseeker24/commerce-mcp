@@ -121,6 +121,11 @@ CREATE TABLE proposals (
   target_id     TEXT NOT NULL,           -- payment/hold/order the action applies to
   amount_cents  INTEGER,                 -- required for refund actions
   action_key    TEXT,                    -- refund:<order_id>:<carrier_exception_id>
+  -- The escalation classification the ANALYST CONFIRMED. execute_resolution reads
+  -- these rather than re-deriving, so the escalation that gets filed is provably
+  -- the one shown in the plan. Re-deriving let propose and execute disagree.
+  escalation_kind   TEXT CHECK (escalation_kind IN ('human_review','manager_approval')),
+  escalation_reason TEXT,
   reasoning     TEXT NOT NULL,           -- the AI's stated justification, stored verbatim
   order_state_snapshot TEXT NOT NULL,    -- JSON of order+payments+holds at proposal time
   status        TEXT NOT NULL DEFAULT 'pending'

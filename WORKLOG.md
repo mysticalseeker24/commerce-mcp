@@ -1,8 +1,132 @@
 # WORKLOG.md — AI-assisted build log
 
-Filled in **during** the build, not reconstructed afterwards. Covers: which model
-and tool did what, the context strategy, AI suggestions I rejected and why, and the
-evidence behind each verification claim.
+Filled in **during** the build, not reconstructed afterwards. The corrections in here
+are recorded with their timestamps intact, including the ones that make me look
+worse; a worklog that only contains decisions that turned out well is a sales
+document, not a record.
+
+**Where each required topic is answered**
+
+| Requirement | Section |
+|---|---|
+| Tools and specific models used | [Tools and models](#tools-and-models) |
+| Why those models, per activity | [Why these models](#why-these-models) |
+| How AI was used to plan and break down the work | [Planning and decomposition](#planning-and-decomposition) |
+| Division of responsibilities | [Who decided what](#who-decided-what) |
+| Important prompts, instructions, context | [Entry 1](#entry-1--context-strategy-the-spec-is-the-prompt) |
+| A corrected / rejected AI suggestion | [Entry 12](#entry-12--rejected-ai-suggestions), plus [8](#entry-8--diagnostics-ambiguity-surfaced-not-silently-resolved), [9](#entry-9--a-latent-correctness-bug-found-by-implementing-not-by-testing), [13](#entry-13--a-live-review-bug-propose-and-execute-disagreed) |
+| How AI-generated work was verified | [Entry 11](#entry-11--verification-evidence) |
+| Remaining risks and unfinished work | [Entry 14](#entry-14--remaining-risks-and-next-steps) |
+
+---
+
+## Tools and models
+
+| Phase of work | Tool | Model |
+|---|---|---|
+| Problem framing, architecture debate, authoring `.agent/` and `CLAUDE.md` | Claude chat (web) | **Fable 5** |
+| Implementation, debugging, testing, deployment | Claude Code | **Opus 5**, high reasoning |
+| Review and analysis from Phase 4 onward | Claude chat (web) | **Opus 5**, high reasoning |
+| Documentation research during the build | Claude Code web fetch | Opus 5 |
+| Tier-3 agent-in-the-loop check | claude.ai custom connector against the deployed server | — |
+
+No other providers, editors, or inline-completion tools were involved.
+
+## Why these models
+
+The split was deliberate, and it maps onto two different kinds of work.
+
+**Fable 5 for the spec, in a chat window.** Everything in `.agent/` came out of an
+extended conversation before any code existed: what the product should refuse to do,
+which failure scenarios were worth seeding, how the tool surface should read to an
+agent. That work is argumentative rather than procedural. It benefits from a model
+that will push back on a half-formed idea and hold a long thread of reasoning, and it
+actively suffers from a tool that wants to start writing files. A chat window with no
+filesystem access was the right constraint, not a limitation.
+
+**Opus 5 in Claude Code for the build.** Once the spec was fixed, the work changed
+character entirely: read four locked documents, execute in a defined order, run the
+gate, stop. That needs an agentic loop with real tool access — running tests, reading
+compiler output, driving a live HTTP server — and it needs sustained instruction
+adherence across many turns, because the constraints ("no `any`", "all SQL in
+`queries.ts`", "tests before `execute_resolution`") only mean anything if they hold
+at turn ninety as well as turn three. High reasoning was left on throughout; the
+places it paid for itself were diagnosis rather than authoring, and they are all in
+this log: the Railway build failure had three stacked causes, and the escalation-kind
+bug was a disagreement between two code paths that only manifested on the narrow set
+of orders that were both a duplicate charge and an ineligible refund.
+
+**Opus 5 in chat for review, from Phase 4.** Reviewing the running server needed a
+different vantage point from the one that built it. Driving the deployed tools from a
+separate context, without the build session's assumptions loaded, is what surfaced
+both of the bugs in [Entry 12](#entry-12--rejected-ai-suggestions) and
+[Entry 13](#entry-13--a-live-review-bug-propose-and-execute-disagreed). Same model,
+deliberately different position.
+
+## Planning and decomposition
+
+The decomposition lives in [`.agent/PLAN.md`](.agent/PLAN.md) and it was written
+before implementation began: seven phases, each with a stated deliverable and an
+explicit gate. The gates are the mechanism — `npm run typecheck && npm test`, output
+shown, and at Phase 1 a manual review of the seeded fixtures that no test could
+substitute for.
+
+Two things made this work better than a task list would have:
+
+**Plan mode before execution.** The build plan was drafted, argued over, and approved
+before a file was written. That round caught four decisions that would have been
+expensive later: the Zod version, the Node pin, the audit scope for proposal-stage
+rejections, and the entire dual-path auth design in
+[Entry 3](#entry-3--the-auth-finding-a-deployment-failure-that-didnt-happen). None of
+those are things you want to discover mid-implementation.
+
+**Gates that actually stopped.** Phase 1 ended with a printed dump of ORD-1001…1011
+and a genuine wait for approval. Phase 2 deployed to Railway *early*, on the
+reasoning in PLAN.md that a deploy problem found at hour four is fatal — which
+[Entry 10](#entry-10--the-deploy-that-failed-and-why-deploying-early-was-the-point)
+records earning its keep, three stacked configuration failures at a point where there
+was time to absorb them.
+
+The client also changed the execution scope mid-build
+([Entry 4](#entry-4--client-redirect-absorbed-mid-build)). The phase structure is
+what made that cheap to absorb: the redirect landed between Phase 0 and Phase 1, and
+the rework was confined to fixtures and write-path semantics because nothing
+downstream had been built yet.
+
+## Who decided what
+
+Close collaboration, with a consistent shape: **AI proposed and implemented; I
+decided anything that changed the contract.** The dividing line was not seniority of
+task but reversibility — anything that would be expensive or dishonest to undo came
+to me.
+
+Decisions I made, each of which the AI surfaced rather than resolved on its own:
+
+| Decision | Where |
+|---|---|
+| Zod 4 over Zod 3, accepting a documented deviation from a locked doc | [Entry 2](#entry-2--spec-deviation-zod-4-instead-of-the-v3-idioms-in-toolsmd) |
+| Node 24 pin | Entry 11, Phase 0 |
+| Audit rows for execution-stage rejections only, not proposal-stage | Phase 0 amendment |
+| URL-token fallback gated off by default, enabled only for the demo | [Entry 3](#entry-3--the-auth-finding-a-deployment-failure-that-didnt-happen) |
+| Dropping `exactOptionalPropertyTypes` for a named SDK incompatibility | CONVENTIONS B1 |
+| Approving the eleven fixtures after reading them row by row | Phase 1 gate |
+| Adding `payments.refunded_cents` — approved before an approved fixture was touched | [Entry 9](#entry-9--a-latent-correctness-bug-found-by-implementing-not-by-testing) |
+| `ORPHANED_HOLD` defined semantically, not for test convenience | [Entry 8](#entry-8--diagnostics-ambiguity-surfaced-not-silently-resolved) |
+| The strict reading of execution scope | [Entry 5](#entry-5--unconfirmed-interpretation-chosen-conservatively) |
+| Which side of the propose/execute disagreement was correct | [Entry 13](#entry-13--a-live-review-bug-propose-and-execute-disagreed) |
+
+The pattern worth naming is the one in Entries 5, 8 and 9: **the AI escalated
+ambiguity instead of picking silently, and I adjudicated on a principle rather than
+on convenience.** `ORPHANED_HOLD` is the clearest case — the test-convenient scoping
+and the semantically correct one happened to agree, but the definition was written to
+mean "a hold that can never be consumed" so it would still hold on a case neither of
+us had thought of.
+
+The two review passes were mine, driving the deployed server by hand and reading the
+responses, with AI helping analyse what they implied. That distinction matters for
+[Entry 13](#entry-13--a-live-review-bug-propose-and-execute-disagreed): 189 tests
+were passing while that bug was live. It took a human calling the real tools and
+noticing that two numbers disagreed.
 
 ---
 
@@ -32,10 +156,11 @@ Two properties of this set matter more than its length:
    statements (not Zod) are what prevents SQL injection, so the constraint survives
    contact with a situation the doc didn't anticipate.
 
-Working style: Claude Code (Opus 5) in plan mode for design and phase planning,
-then execution against approved plans with a hard stop at every phase gate. Plan
-mode did real work here — three of the decisions below were caught before a line of
-code was written.
+The set was authored in a Claude chat session with Fable 5, before Claude Code was
+opened at all. That ordering was the point: the spec is an argument about what the
+product should refuse to do, and it wanted a model that would push back rather than
+one that would start writing files. See
+[Why these models](#why-these-models).
 
 ---
 
@@ -246,7 +371,7 @@ attempt would occupy the key and permanently block the legitimate retry.
 
 ## Entry 8 — Diagnostics ambiguity surfaced, not silently resolved
 
-**Phase:** 1 gate · **Second instance of the pattern in [Entry 5](#entry-5).**
+**Phase:** 1 gate · **Second instance of the pattern in [Entry 5](#entry-5--unconfirmed-interpretation-chosen-conservatively).**
 
 Reading the Phase 1 fixture dump turned up a case the spec doesn't decide:
 **ORD-1001 has an `active` inventory hold on a `failed` order.** ORD-1004 —

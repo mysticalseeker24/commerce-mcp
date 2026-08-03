@@ -26,7 +26,7 @@ document, not a record.
 |---|---|---|
 | Problem framing, architecture debate, authoring `.agent/` and `CLAUDE.md` | Claude chat (web) | **Fable 5** |
 | Implementation, debugging, testing, deployment | Claude Code | **Opus 5**, high reasoning |
-| Review and analysis from Phase 4 onward | Claude chat (web) | **Opus 5**, high reasoning |
+| Review and analysis from Phase 4 onward | Claude chat (web), **same thread**, model switched | **Opus 5**, high reasoning |
 | Documentation research during the build | Claude Code web fetch | Opus 5 |
 | Tier-3 agent-in-the-loop check | claude.ai custom connector against the deployed server | — |
 
@@ -61,12 +61,24 @@ this log: the Railway build failure had three stacked causes, and the escalation
 bug was a disagreement between two code paths that only manifested on the narrow set
 of orders that were both a duplicate charge and an ineligible refund.
 
-**Opus 5 in chat for review, from Phase 4.** Reviewing the running server needed a
-different vantage point from the one that built it. Driving the deployed tools from a
-separate context, without the build session's assumptions loaded, is what surfaced
-both of the bugs in [Entry 12](#entry-12--rejected-ai-suggestions) and
-[Entry 13](#entry-13--a-live-review-bug-propose-and-execute-disagreed). Same model,
-deliberately different position.
+**Opus 5 in chat for review, from Phase 4 — in the same thread that wrote the spec.**
+This is the part I would not have designed deliberately, and it turned out to matter
+most. The review context was the *original spec conversation*, continued, with the
+model switched from Fable 5 to Opus 5 once there was a running server to interrogate.
+
+So the reviewer held the full argument about what the product should refuse to do,
+and had never seen a line of the implementation. That asymmetry is why the review
+passes were sharp: they were checking the built thing against the *intent*, not
+against itself. Both bugs in [Entry 12](#entry-12--rejected-ai-suggestions) and
+[Entry 13](#entry-13--a-live-review-bug-propose-and-execute-disagreed) came out of
+that gap — the search tool was blind to precisely the anomaly class the policy exists
+to handle, and the two write stages disagreed about which human queue an escalation
+belongs in. Neither is visible from inside the code; both are obvious if you know
+what the thing was supposed to do and are looking at what it actually returns.
+
+The generalisable version: separating the context that holds the *intent* from the
+context that holds the *implementation* is worth more than separating the models.
+Claude Code had every file and 189 passing tests, and could not see either bug.
 
 ## Planning and decomposition
 

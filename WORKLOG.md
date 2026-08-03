@@ -586,4 +586,46 @@ string" would have passed against the broken design.
 
 ## Entry 13 — Remaining risks and next steps
 
+**Verification gap this build closed late.** Every suite except `http.test.ts` calls
+handlers directly. That is fast, and it is blind to schema validation, transport
+negotiation, and error serialization — an entire layer. A reviewer found a `.refine()`
+on an advertised schema that the SDK evaluated *above* the handler, so the
+`{error_code, message, hint}` contract never fired, while every handler-level test
+passed throughout. Tier 2 now exercises a real SDK client over real HTTP, and the
+filterless-search case is its regression test. The lesson generalises: a test that
+calls the function under test directly cannot see anything the framework does on its
+behalf.
+
+**A correction that came out of writing those tests.** I had described the `.refine()`
+defect as errors being "thrown across the transport". Measured, the SDK returns
+`isError: true` with a raw `-32602 Input validation error` string. The fix and its
+rationale are unchanged — the agent still never received the hint — but the mechanism
+is "returned without our contract", not "thrown". The boundary is now asserted rather
+than assumed: shape errors from the schema are acceptable, because the pattern tells
+the agent what to fix; business rules are not, because their hint is the whole value.
+
+**Remaining risks, honestly.**
+
+1. **Tier 3 has not been run cold.** I connected the deployed server to claude.ai and
+   confirmed it refuses ORD-1002's tempting refund with the reason attached, but I
+   built the thing — I cannot claim it proves an uninformed agent picks the right tool
+   unprompted. That run belongs to the evaluator, which is why a hosted URL is the
+   deliverable rather than a recording.
+2. **Single instance, single token.** Both are listed in the README limitations and
+   both are one step on the documented scaling path.
+3. **The strict-reading assumption is unconfirmed.** Order-system actions that never
+   touch the processor escalate rather than execute. If the client meant the looser
+   reading it is a small change to the action enum, and the progress email flags it
+   deliberately so the correction can arrive before submission rather than after.
+4. **`ALLOW_URL_TOKEN` is on in the deployment.** Intended for submission, but it was
+   switched on earlier than planned, which cost the clean experiment of testing
+   claude.ai's header auth against an unmounted fallback. The empirical answer
+   arrived anyway, from the connector failing: header auth is not available on a
+   standard account.
+
+**Next steps if this continued.** Postgres swap; per-token auth and rate limiting;
+proposal TTL with a cleanup job; and the first thing I would actually do — widen the
+policy engine from six hard-coded checks to a declarative rule set, since the client
+changed the execution scope once already and will again.
+
 *(feeds the README section of the same name)*

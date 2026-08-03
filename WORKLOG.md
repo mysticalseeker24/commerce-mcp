@@ -482,6 +482,68 @@ protocol defect was in our server, not only in the client's rollout state. Both 
 recorded because the second one is the part I would have missed if the first had
 simply worked.
 
+### Phase 4 — the write path, test-first
+
+**Test-first commit: [`292e5ad`](../../commit/292e5ad)** — 36 failing tests, committed
+red before `propose_resolution` or `execute_resolution` existed. Implementation in
+`25d71aa`. The two commits are the evidence the discipline was followed rather than
+claimed after the fact.
+
+165 tests green. One test failed against the finished code and **the test was wrong,
+not the code**: I had asserted that an over-cap refund returns an error, but an
+over-cap amount is a failed policy check, and the redirect rule correctly turns any
+failed check into an executable escalation. Rewritten to assert the redirect while
+keeping the original intent — that the policy enforces the cap independently of the
+Zod schema, because the schema is not the security boundary.
+
+Verified over HTTP against the compiled server, not only through direct handler
+calls:
+
+```
+propose  ORD-1007 refund $30.00 -> action: refund, eligible: true
+execute  -> action_key refund:ORD-1007:CE-004, refunded_cents 5000 -> 8000
+execute  -> already_executed
+audit    refund | success                   | $30.00 | saksham@example.com | refund:ORD-1007:CE-004
+         refund | rejected:already_executed | $30.00 | unattributed        | null
+```
+
+**`action_key` closes the loop, visibly.** After the refund executes, the order's
+timeline reports `discrepancy: $0.00`, no flags, and
+`first_failure: no_duplicate_refund` — check 6 now blocks a second refund for the
+same remedy using the key the first one wrote. That is the idempotency guarantee
+observable from the read side, not merely asserted in a test.
+
+### Tier 3 — agent-in-the-loop, against the hosted server
+
+The deployed server was connected to claude.ai as a custom connector and driven
+through the real MCP tool interface. Asking it to refund ORD-1002's duplicate
+capture — the single most tempting wrong action in the product — returned:
+
+```
+action: escalate   escalation_kind: manager_approval
+first_failure: customer_risk_below_threshold
+plan: "Cannot refund $150.00 on order ORD-1002: risk_score 85 >= 70.
+       Executing this proposal records a manager-approval escalation with the
+       full eligibility evidence instead. No payment state will change."
+```
+
+All six checks came back with their evidence strings, including the two that failed
+and the one that reads *"no action key — requires a verified carrier exception
+first"*. Nothing was mutated: a proposal is inert by construction.
+
+**Honest limit on this evidence.** This was not a *cold* session — I built the
+server, so I cannot claim it proves an uninformed agent picks the right tool
+unprompted. What it does prove is that the deployed server speaks the protocol
+correctly to a real client, and that the tool surface refuses the tempting action
+while explaining which check refused it. The genuinely cold Tier-3 run belongs to
+the evaluator, which is the point of shipping a hosted URL.
+
+`execute_resolution` was deliberately **not** called on ORD-1007 against the hosted
+instance, to leave the one executable case unconsumed for the demo recording. The
+database reseeds on every boot, so this is reversible either way.
+
+---
+
 ## Entry 12 — Rejected AI suggestions
 
 ### Prose-parsing the refund amount out of event text

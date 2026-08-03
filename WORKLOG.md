@@ -32,6 +32,11 @@ document, not a record.
 
 No other providers, editors, or inline-completion tools were involved.
 
+*Provenance of the above: the Claude Code attribution is verifiable from the session
+itself. The chat-side model attributions and the reasoning-effort setting are from my
+own record of what I had selected, not from anything the transcripts stamp — so read
+them as an accurate account of my intent rather than as instrumented telemetry.*
+
 ## Why these models
 
 The split was deliberate, and it maps onto two different kinds of work.
@@ -547,7 +552,7 @@ deployed instance over HTTPS:
 | `GET /health` unauthenticated | `{"status":"ok","seedVersion":"2.0.0","orderCount":250}` |
 | `POST /mcp` no token / wrong token | 401, 401 |
 | `GET /mcp` | 405 with `Allow: POST` |
-| `tools/list` | 5 tools, descriptions intact |
+| `tools/list` | 5 tools, descriptions intact (read tools only; the two write tools land in Phase 4) |
 | ORD-1007 | `discrepancy_cents: 3000`, `PARTIAL_REFUND_GAP`, eligible, **6/6 checks pass**, `$150.00` refundable |
 | ORD-1009 | ineligible, `first_failure: amount_within_cap`, evidence *"$180.00 exceeds the $150.00 per-resolution cap"* |
 | ORD-1008 | note verbatim inside the wrapper, zero flags, and **the string appears nowhere else in the payload** |
@@ -651,6 +656,10 @@ plan: "Cannot refund $150.00 on order ORD-1002: risk_score 85 >= 70.
        Executing this proposal records a manager-approval escalation with the
        full eligibility evidence instead. No payment state will change."
 ```
+
+*(This transcript predates the [Entry 13](#entry-13--a-live-review-bug-propose-and-execute-disagreed)
+fix; the kind now reads `human_review` at both stages. Left as captured rather than
+rewritten, since it is the evidence the bug existed.)*
 
 All six checks came back with their evidence strings, including the two that failed
 and the one that reads *"no action key — requires a verified carrier exception
@@ -769,6 +778,16 @@ test now exists.
 ---
 
 ## Entry 14 — Remaining risks and next steps
+
+**On the elapsed time.** This was built in a compressed window, which is worth stating
+because it explains the shape of the log rather than excusing it. The sequencing is
+what absorbed the pressure: because the spec was fixed before any code existed and
+every phase ended at a gate that actually stopped, a mid-build change to the execution
+scope ([Entry 4](#entry-4--client-redirect-absorbed-mid-build)) cost roughly forty
+minutes of rework instead of a rewrite — the propose→execute skeleton was already
+gated, so narrowing *what may be executed* touched fixtures and write-path semantics
+and nothing else. The discipline held under time pressure because it was structural,
+not because I remembered to be careful.
 
 **Verification gap this build closed late.** Every suite except `http.test.ts` calls
 handlers directly. That is fast, and it is blind to schema validation, transport

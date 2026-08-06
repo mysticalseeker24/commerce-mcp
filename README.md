@@ -50,8 +50,14 @@ The sharpest case is ORD-1002, a genuine double charge. The obvious fix is to re
 the duplicate. Asking for exactly that returns:
 
 > **Cannot refund $150.00 on order ORD-1002: risk_score 85 >= 70.** Executing this
-> proposal records a manager-approval escalation with the full eligibility evidence
+> proposal records a human-review escalation with the full eligibility evidence
 > instead. No payment state will change.
+
+It routes to *human review* rather than manager approval because a suspected
+duplicate charge takes precedence over a merely ineligible refund: the
+processor-adjacent nature of the case is what decides who should look at it. That
+precedence is decided once, in `classifyEscalation()`, and persisted on the proposal
+so the escalation that gets filed is provably the one the analyst confirmed.
 
 ## Architecture
 
@@ -219,7 +225,7 @@ tests/seed.test.ts        42   fixture invariants; each of the 11 scenarios veri
 tests/policy.test.ts      19   each of the six checks failing in isolation, and every boundary
 tests/timeline.test.ts    28   diagnostics flags, arithmetic, the untrusted-note wrapper
 tests/search.test.ts      39   full pagination sweep, anomaly hints, error contracts
-tests/resolution.test.ts  50   the safety core — written and watched failing first
+tests/resolution.test.ts  55   the safety core — written and watched failing first
 tests/http.test.ts        29   real SDK client over real HTTP
                          ───
                          212
@@ -252,6 +258,12 @@ Point a client at the hosted URL and try, in order:
 
 The near-miss cases are worth a look too: ORD-1009 ($180 gap, over the cap), ORD-1010
 (risk 85), ORD-1011 (45 days old). Each fails exactly one check and says so.
+
+**Before demonstrating, redeploy.** The database is dropped and reseeded on every
+boot, so a redeploy restores ORD-1007 to its unrefunded state and clears any
+escalations left by earlier exploration. Confirm with
+[`/health`](https://commerce-mcp.up.railway.app/health) — a low `uptime` means a
+fresh seed.
 
 ---
 
